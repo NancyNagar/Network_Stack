@@ -1,334 +1,439 @@
 \documentclass[10pt,a4paper]{article}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-\emergencystretch=3em
-\usepackage[margin=2cm]{geometry}
+\usepackage[margin=2.1cm,top=2.4cm,bottom=2.2cm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{listings}
 \usepackage{booktabs}
+\usepackage{tabularx}
 \usepackage{xcolor}
 \usepackage{float}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage[most]{tcolorbox}
 \usepackage{hyperref}
-\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black}
 
-\lstset{basicstyle=\ttfamily\small,columns=fullflexible,keepspaces=true,
-        frame=single,framerule=0.3pt,rulecolor=\color{black!30},
-        backgroundcolor=\color{black!3},aboveskip=4pt,belowskip=4pt}
+\definecolor{accent}{HTML}{0F6E7A}
+\definecolor{soft}{HTML}{EAF4F5}
+\definecolor{ink}{HTML}{22313A}
+\hypersetup{colorlinks=true,linkcolor=accent,urlcolor=accent}
+\emergencystretch=3em
+\setlist{nosep,leftmargin=1.3em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
 
-% ---------------------------------------------------------------- team (TODO)
-\newcommand{\teamA}{TODO Name 1 (TODO Entry No.~1)}
-\newcommand{\teamB}{TODO Name 2 (TODO Entry No.~2)}
+\titleformat{\section}{\Large\bfseries\color{accent}}{R\thesection}{0.6em}{}[\vspace{-0.3em}{\color{accent!35}\titlerule[0.8pt]}]
+\titlespacing*{\section}{0pt}{16pt}{6pt}
+\titleformat{\subsection}{\large\bfseries\color{ink}}{}{0pt}{}
+\titlespacing*{\subsection}{0pt}{10pt}{3pt}
 
-% ---------------------------------------------------------------- screenshots
-% \shot{file}{caption}{todo text}: full-width screenshot from screenshots/<file>.png,
-% or a framed TODO box if the file is missing.
-\newcommand{\todobox}[2]{%
-  \fbox{\parbox{0.94\linewidth}{\vspace{1.2em}%
-    \centering{\color{red!70!black}\bfseries SCREENSHOT TODO: \texttt{\detokenize{#1}.png}}\par
-    \vspace{0.5em}\raggedright\small #2\par\vspace{1.2em}}}}
-\newcommand{\shot}[3]{%
-  \begin{figure}[H]\centering
-  \IfFileExists{screenshots/#1.png}%
-    {\includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{screenshots/#1.png}}%
-    {\todobox{#1}{#3}}%
-  \caption{#2}\label{fig:#1}
-  \end{figure}}
-% two screenshots side by side (used for R1)
-\newcommand{\halfshot}[2]{%
-  \begin{minipage}[t]{0.49\linewidth}\centering
-  \IfFileExists{screenshots/#1.png}%
-    {\includegraphics[width=\linewidth,height=0.3\textheight,keepaspectratio]{screenshots/#1.png}}%
-    {\todobox{#1}{#2}}%
-  \end{minipage}}
+\captionsetup{font=small,labelfont={bf,color=accent},labelsep=period,skip=4pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.3pt}
+\fancyhead[L]{\small\color{ink!70}COL334 \textperiodcentered{} Assignment 3}
+\fancyhead[R]{\small\color{ink!70}team chill\_chill}
+\fancyfoot[C]{\small\color{ink!70}\thepage}
+
+\lstset{basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,
+        backgroundcolor=\color{soft},frame=single,framerule=0pt,
+        xleftmargin=0pt,aboveskip=3pt,belowskip=3pt}
 
 \newcommand{\cmd}[1]{\texttt{#1}}
 
-\title{COL334 Assignment 3: Routing, TCP/IPv4 over Raw Sockets and HTTP\\[2pt]\large Report}
-\author{\teamA \\ \teamB}
-\date{}
+\newtcolorbox{aside}[1][]{enhanced,breakable,colback=soft,colframe=accent,
+  boxrule=0pt,leftrule=2.5pt,arc=0pt,left=8pt,right=8pt,top=4pt,bottom=4pt,#1}
+
+\newcommand{\missing}[1]{\fbox{\parbox{0.9\linewidth}{\centering\vspace{1.6em}%
+  \small\color{ink!60}screenshot: \texttt{\detokenize{#1}}\vspace{1.6em}}}}
+
+\newcommand{\shot}[2]{%
+  \begin{figure}[H]\centering
+  \IfFileExists{screenshots/#1.png}%
+    {\includegraphics[width=\linewidth,height=0.4\textheight,keepaspectratio]{screenshots/#1.png}}%
+    {\missing{#1.png}}
+  \caption{#2}
+  \end{figure}}
+
+\newcommand{\halfshot}[1]{%
+  \begin{minipage}[t]{0.485\linewidth}\centering
+  \IfFileExists{screenshots/#1.png}%
+    {\includegraphics[width=\linewidth,height=0.27\textheight,keepaspectratio]{screenshots/#1.png}}%
+    {\missing{#1.png}}
+  \end{minipage}}
+
+\newcommand{\stackimg}[2]{%
+  \IfFileExists{screenshots/#1.png}%
+    {\includegraphics[width=\linewidth,height=#2\textheight,keepaspectratio]{screenshots/#1.png}}%
+    {\missing{#1.png}}\par\vspace{4pt}}
+
+\newcommand{\pairshot}[3]{%
+  \begin{figure}[H]\centering
+  \halfshot{#1}\hfill\halfshot{#2}
+  \caption{#3}
+  \end{figure}}
 
 \begin{document}
-\maketitle
-\vspace{-2em}
 
-\paragraph{Setup notes.}
-Four Ubuntu VMs (client, r1, r2, server) with four isolated internal networks
-(LAN~A, LAN~B, LAN~C, Link~D). Each machine is configured only by its
-\cmd{netcfg/*.sh} script, run once as root after setting \cmd{rp\_filter=1} on every
-interface. Before running our programs on the VMs we add (by hand, \emph{not} in
-\cmd{netcfg} or in our code, as allowed on Piazza) an iptables rule that drops the
-RSTs the kernel would otherwise send for our raw-socket connections:
+\begin{tcolorbox}[enhanced,colback=accent,colframe=accent,coltext=white,arc=0pt,
+                  boxrule=0pt,left=14pt,right=14pt,top=12pt,bottom=12pt]
+  {\small\bfseries\color{white!80}COL334 \textperiodcentered{} COMPUTER NETWORKS \textperiodcentered{} ASSIGNMENT 3}\par\vspace{4pt}
+  {\LARGE\bfseries Routing, TCP over raw sockets and HTTP}\par\vspace{2pt}
+  {\large Report}\par\vspace{8pt}
+  {\bfseries Team chill\_chill}\quad\textperiodcentered\quad
+  Shivanshu Aryan (2024CS10237)\quad\textperiodcentered\quad Nancy Nagar (2024CS10518)
+\end{tcolorbox}
+
+\vspace{4pt}
+\subsection*{Setup}
+We built the network from four Ubuntu VMs, \emph{client}, \emph{r1}, \emph{r2} and
+\emph{server}, running in UTM (QEMU). UTM has no named internal networks, so each of the four
+links is a point-to-point QEMU socket netdev on the loopback interface (\cmd{lanA}, \cmd{lanB},
+\cmd{lanC}, \cmd{linkD}), with no DHCP server on any of them. Each VM also has one management
+adapter, \cmd{enp0s1}, that we use for SSH access; none of our scripts touches it and none of the
+experiments use it. Before running anything, we set \cmd{rp\_filter} to 1 on the interfaces of the four lab
+networks on every VM, then ran that machine's script from \cmd{netcfg/} once as root.
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+VM & Links (socket netdevs) & Script\\
+\midrule
+client & LAN A, Link D & \cmd{netcfg/client.sh IF\_A IF\_D}\\
+r1     & LAN A, LAN B & \cmd{netcfg/r1.sh IF\_A IF\_B}\\
+r2     & LAN B, LAN C, Link D & \cmd{netcfg/r2.sh IF\_B IF\_C IF\_D}\\
+server & LAN C & \cmd{netcfg/server.sh IF\_C}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Our TCP runs on a raw socket, so the kernel has no socket on our ports and would reply to
+every SYN or SYN-ACK with its own RST. To stop that, we add one iptables rule by hand on the
+client and the server. It is not part of \cmd{netcfg} or of our code, and the server is always
+started on a port in 8080--8083.
 \begin{lstlisting}
 client$ sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST --sport 61000:65535 -j DROP
 server$ sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST --sport 8080:8083 -j DROP
 \end{lstlisting}
-Our server is therefore always started with a port in 8080--8083.
 
 %=====================================================================
-\section*{R1. Adapters, addresses and routes}
+\section{Adapters, addresses and routes}
 
-Each VM's adapters are attached only to internal networks: client = LAN~A + Link~D,
-r1 = LAN~A + LAN~B, r2 = LAN~B + LAN~C + Link~D, server = LAN~C
-(TODO: fill in the internal-network names used in the hypervisor, and mention the extra
-SSH adapter if you kept one). Table~\ref{tab:addr} shows what the scripts configure;
-\cmd{IF\_X} is the interface name passed to the script for network X.
+\textbf{What we did.} For each VM we opened UTM's QEMU Arguments pane, which lists every
+\cmd{-netdev}/\cmd{-device} pair and so shows which links the VM has, then ran \cmd{ip -br addr}
+and \cmd{ip route} inside the VM after its script had run. The two together show that each machine sits on exactly the networks it should, with
+the addresses from the plan.
 
 \begin{table}[H]\centering\small
-\begin{tabular}{@{}lp{1.9cm}p{2.6cm}p{8.2cm}@{}}
+\begin{tabularx}{\linewidth}{@{}lp{4.3cm}Xl@{}}
 \toprule
-Machine & Interface & Address & Routes installed by the script (besides connected ones)\\
+Machine & Addresses & Routes added by the script & Forwarding\\
 \midrule
-client & IF\_A, IF\_D & 10.10.1.10/24, 10.10.4.2/30 & \cmd{default via 10.10.1.1 dev IF\_A}\\
-r1     & IF\_A, IF\_B & 10.10.1.1/24, 10.10.2.1/24 & \cmd{default via 10.10.2.2 dev IF\_B} (the single route, A5)\\
-r2     & IF\_B, IF\_C, IF\_D & 10.10.2.2/24, 10.10.3.1/24, 10.10.4.1/30 &
-          \cmd{10.10.1.10/32 via 10.10.4.2 dev IF\_D}\\
-       & & & \cmd{10.10.1.0/24 via 10.10.2.1 dev IF\_B} (no default, A6)\\
-server & IF\_C & 10.10.3.10/24 & \cmd{default via 10.10.3.1 dev IF\_C}\\
+client & 10.10.1.10/24, 10.10.4.2/30 & \cmd{default via 10.10.1.1} & off\\
+r1 & 10.10.1.1/24, 10.10.2.1/24 & \cmd{default via 10.10.2.2} & on\\
+r2 & 10.10.2.2/24, 10.10.3.1/24, 10.10.4.1/30 &
+  \cmd{10.10.1.10/32 via 10.10.4.2}\newline\cmd{10.10.1.0/24 via 10.10.2.1} & on\\
+server & 10.10.3.10/24 & \cmd{default via 10.10.3.1} & off\\
 \bottomrule
-\end{tabular}
-\caption{Addressing and static routes. \cmd{ip\_forward} is 1 on r1/r2 and 0 on the client and server (A4).}
-\label{tab:addr}
+\end{tabularx}
+\caption{What each script configures. Routes listed are in addition to the connected networks.}
 \end{table}
 
-Why these routes: the client has only a default route via r1, so everything it
-originates goes client$\to$r1$\to$r2$\to$server (A2) with source 10.10.1.10. r1 needs
-just one route (default via r2) because LAN~C and Link~D are both behind r2. On r2,
-the \cmd{/32} host route for the client beats the \cmd{/24} by longest-prefix match, so
-everything addressed to 10.10.1.10 (server replies in particular) leaves over Link~D
-(A3), while the rest of LAN~A (i.e.\ r1's 10.10.1.1) is still reached through r1 (A1).
-The server needs only a default route via r2.
+\textbf{Why these routes.} The client only has a default route via r1, so everything it sends
+goes client $\to$ r1 $\to$ r2 $\to$ server, with source address 10.10.1.10. r1 needs a single
+route, a default via r2, because both LAN C and Link D sit behind r2. On r2 the host route for
+10.10.1.10 beats the /24 by longest-prefix match, so everything addressed to the client,
+including all the server's replies, leaves over Link D. The rest of LAN A (r1 itself) is still
+reached through r1. r2 has no default route, and the server only needs a default via r2.
 
 \begin{figure}[H]\centering
-\halfshot{r1_adapters_client}{Hypervisor network-adapter settings of the client VM (every adapter tab, or \cmd{VBoxManage showvminfo client | grep NIC} on the host).}\hfill
-\halfshot{r1_ipaddr_route_client}{On client: \cmd{ip -br addr; ip route}}
-\caption{Client: adapter settings (left), \cmd{ip -br addr} and \cmd{ip route} (right).}
+\stackimg{r1_adapters_client}{0.3}\stackimg{r1_ipaddr_route_client}{0.2}
+\caption{client: QEMU arguments (top), then \cmd{ip -br addr} and \cmd{ip route} (bottom).}
 \end{figure}
 \begin{figure}[H]\centering
-\halfshot{r1_adapters_r1}{Adapter settings of the r1 VM (both adapters).}\hfill
-\halfshot{r1_ipaddr_route_r1}{On r1: \cmd{ip -br addr; ip route}}
-\caption{r1: adapter settings (left), \cmd{ip -br addr} and \cmd{ip route} (right).}
+\stackimg{r1_adapters_r1}{0.3}\stackimg{r1_ipaddr_route_r1}{0.2}
+\caption{r1: QEMU arguments (top), then \cmd{ip -br addr} and \cmd{ip route} (bottom).}
 \end{figure}
 \begin{figure}[H]\centering
-\halfshot{r1_adapters_r2}{Adapter settings of the r2 VM (all three adapters).}\hfill
-\halfshot{r1_ipaddr_route_r2}{On r2: \cmd{ip -br addr; ip route}}
-\caption{r2: adapter settings (left), \cmd{ip -br addr} and \cmd{ip route} (right).}
+\stackimg{r1_adapters_r2_1}{0.27}\stackimg{r1_adapters_r2_2}{0.27}\stackimg{r1_ipaddr_route_r2}{0.2}
+\caption{r2: QEMU arguments, scrolled to show all three links (top and middle), then \cmd{ip -br addr} and \cmd{ip route} (bottom).}
 \end{figure}
 \begin{figure}[H]\centering
-\halfshot{r1_adapters_server}{Adapter settings of the server VM.}\hfill
-\halfshot{r1_ipaddr_route_server}{On server: \cmd{ip -br addr; ip route}}
-\caption{server: adapter settings (left), \cmd{ip -br addr} and \cmd{ip route} (right).}
+\stackimg{r1_adapters_server}{0.3}\stackimg{r1_ipaddr_route_server}{0.2}
+\caption{server: QEMU arguments (top), then \cmd{ip -br addr} and \cmd{ip route} (bottom).}
 \end{figure}
+
+\begin{aside}
+\textbf{What the screenshots show.}
+The client has \cmd{enp0s9} = 10.10.1.10/24 (LAN A) and \cmd{enp0s10} = 10.10.4.2/30 (Link D), with
+\cmd{default via 10.10.1.1 dev enp0s9}. r1 has \cmd{enp0s9} = 10.10.1.1/24 and \cmd{enp0s10} = 10.10.2.1/24,
+and one route besides the connected networks, \cmd{default via 10.10.2.2 dev enp0s10}. r2 has
+\cmd{enp0s9} = 10.10.2.2/24, \cmd{enp0s10} = 10.10.3.1/24 and \cmd{enp0s11} = 10.10.4.1/30, with
+\cmd{10.10.1.10 via 10.10.4.2 dev enp0s11} and \cmd{10.10.1.0/24 via 10.10.2.1 dev enp0s9}. The server has
+\cmd{enp0s9} = 10.10.3.10/24 and \cmd{default via 10.10.3.1 dev enp0s9}. These match Table~1 of the
+handout address for address. The QEMU arguments show the links as \cmd{lanA}, \cmd{lanB}, \cmd{lanC}
+and \cmd{linkD}, and each VM has exactly the netdev/device pairs listed in the setup table.
+
+Every VM also lists \cmd{enp0s1}, the management adapter, with a \cmd{192.168.64.x} address and the
+default route that DHCP added for it. That route has metric 100, while the routes our scripts
+install keep the default metric, so all traffic between the 10.10.x networks follows the routes above.
+The scripts themselves install no default route on r2.
+\end{aside}
+
 
 %=====================================================================
-\section*{R2. traceroute in both directions}
+\section{traceroute in both directions}
 
-Expected output (\cmd{traceroute -n}, default UDP probes):
+\textbf{What we did.} We ran \cmd{traceroute -n} from the client to the server and from the
+server to the client. The two traces are different, and that is what the routing was designed
+to produce.
 \begin{lstlisting}
-client$ traceroute -n 10.10.3.10          server$ traceroute -n 10.10.1.10
- 1  10.10.1.1   (r1, LAN A)                1  10.10.3.1   (r2, LAN C)
- 2  10.10.4.1   (r2, Link D)               2  10.10.1.10  (client)
- 3  10.10.3.10  (server)
+client$ traceroute -n 10.10.3.10        server$ traceroute -n 10.10.1.10
+ 1  10.10.1.1    (r1)                    1  10.10.3.1    (r2)
+ 2  10.10.4.1    (r2, Link D address)    2  10.10.1.10   (client)
+ 3  10.10.3.10   (server)
 \end{lstlisting}
 
-\textbf{Client $\to$ server.}
-\emph{Hop 1:} the TTL=1 probe goes to r1 (the client's default gateway). r1 sends ICMP
-Time Exceeded back out of LAN~A, so its source is r1's LAN~A address 10.10.1.1.
-\emph{Hop 2:} the TTL=2 probe is forwarded by r1 to r2 over LAN~B, where it expires. r2
-builds an ICMP Time Exceeded addressed to 10.10.1.10. Linux picks the source address of
-an ICMP error from the route used to send it (\cmd{icmp\_errors\_use\_inbound\_ifaddr=0}),
-not from the interface the probe arrived on. r2's route to 10.10.1.10 is the \cmd{/32} via
-Link~D, so the reply leaves on IF\_D with source 10.10.4.1. That is why r2 appears as
-10.10.4.1 and not as 10.10.2.2 (the address the probe actually reached). The client accepts it on
-its Link~D interface (10.10.4.1 is directly connected there).
-\emph{Hop 3:} the probe reaches the server, which answers ICMP Port Unreachable from 10.10.3.10;
-that reply also travels server$\to$r2$\to$client over Link~D.
+\textbf{Client to server.}
+\emph{Hop 1:} the probe with TTL 1 dies at r1, the client's gateway, which answers from its LAN A
+address, 10.10.1.1.
+\emph{Hop 2:} r1 forwards the TTL 2 probe to r2, where it expires. r2 sends the ICMP error to
+10.10.1.10, and Linux picks the source address of that error from the route it uses to send it,
+not from the interface the probe came in on. r2's route to 10.10.1.10 is the host route over
+Link D, so the error leaves on that interface and carries r2's Link D address, 10.10.4.1. That
+is why r2 shows up as 10.10.4.1 rather than as 10.10.2.2, the address the probe actually
+reached. The client accepts it because 10.10.4.1 is directly connected on Link D.
+\emph{Hop 3:} the probe reaches the server, which answers with a port-unreachable from
+10.10.3.10. That reply travels back through r2 and over Link D as well.
 
-\textbf{Server $\to$ client.}
-\emph{Hop 1:} r2 (server's gateway) drops the TTL=1 probe and replies out of LAN~C, source
-10.10.3.1. \emph{Hop 2:} r2 forwards the TTL=2 probe straight over Link~D to the client
-(\cmd{/32} route), and the client replies with Port Unreachable from the probed address 10.10.1.10.
-r1 never appears because it is not on the server$\to$client path.
+\textbf{Server to client.}
+\emph{Hop 1:} r2 is the server's gateway, so the TTL 1 probe dies there and the error comes back
+from 10.10.3.1. \emph{Hop 2:} r2 forwards the next probe straight over Link D to the client, and
+the client answers from the probed address, 10.10.1.10. r1 never appears, since it is not on this path.
 
-\textbf{Why the directions differ.} The routing is asymmetric on purpose (A2/A3): the
-client's only non-connected route is via r1, while r2's host route sends everything for the
-client over Link~D. So the forward path has three hops and the reverse path two, and in
-the forward trace r2 shows up with its Link~D address because its ICMP reply goes
-back over the reverse path.
+\textbf{Why the directions differ.} The client's only non-connected route goes via r1, while r2
+sends everything for the client over Link D. So the forward path has three hops and the reverse
+path has two, and r2 appears with its Link D address in the forward trace because its replies
+take the reverse path.
 
 \shot{r2_traceroute_c2s}{\cmd{traceroute -n 10.10.3.10} on the client.}
-  {On client: \cmd{traceroute -n 10.10.3.10}}
 \shot{r2_traceroute_s2c}{\cmd{traceroute -n 10.10.1.10} on the server.}
-  {On server: \cmd{traceroute -n 10.10.1.10}}
+
+\begin{aside}
+\textbf{What the screenshots show.}
+Client to server has three hops: 10.10.1.1 at about 2.2--2.5\,ms, 10.10.4.1 at about 5.0\,ms and
+10.10.3.10 at about 7.0\,ms. Server to client has two: 10.10.3.1 at about 1.4\,ms and 10.10.1.10 at about
+3.9\,ms. The second hop of the forward trace is the Link D address of r2, exactly as explained above, and
+r1 is absent from the reverse trace. The round-trip times grow with each hop, and the reverse round
+trip to the client (about 3.9\,ms) is clearly shorter than the forward one to the server (about 7.0\,ms),
+which fits the shorter reverse path.
+\end{aside}
+
 
 %=====================================================================
-\section*{R3. Reverse-path filtering}
+\section{Reverse-path filtering}
 
-The value the kernel actually uses on an interface is
-$\max(\cmd{conf.all.rp\_filter},\ \cmd{conf.<if>.rp\_filter})$. All machines start
-with 1 everywhere and our scripts never touch \cmd{conf.all}, so it stays 1. Setting an
-interface to 0 would therefore have no effect ($\max(1,0)=1$); the only way to relax
-one interface is loose mode (2), which accepts a packet if its source is reachable via
-\emph{any} interface. Strict mode (1) requires that the best route back to the source
-leaves through the interface the packet arrived on.
+\textbf{What we did.} We read back every \cmd{rp\_filter} value with
+\cmd{sysctl -a | grep rp\_filter} on all four machines. On the VMs the interface names are
+\cmd{enp0s9} and \cmd{enp0s10} on the client (IF\_A and IF\_D), \cmd{enp0s9} and \cmd{enp0s10}
+on r1 (IF\_A and IF\_B), \cmd{enp0s9}, \cmd{enp0s10} and \cmd{enp0s11} on r2 (IF\_B, IF\_C and
+IF\_D) and \cmd{enp0s9} on the server (IF\_C). The management adapter \cmd{enp0s1} and \cmd{lo}
+show 2 in the output, which is Ubuntu's default; the scripts do not touch them. The kernel uses
+$\max(\cmd{conf.all}, \cmd{conf.<if>})$ for each interface. All machines start at 1 and our
+scripts never touch \cmd{conf.all}, so it stays at 1. That means setting an interface to 0
+would change nothing, and the only way to relax one is loose mode (2). Loose mode accepts a
+packet if its source is reachable through \emph{any} interface, while strict mode needs the best
+route back to the source to leave through the interface the packet arrived on.
 
 \begin{table}[H]\centering\small
-\begin{tabular}{@{}lllp{9.3cm}@{}}
+\begin{tabularx}{\linewidth}{@{}llcX@{}}
 \toprule
-Machine & Interface & Value & Reason\\
+Machine & Interface & Value & Why\\
 \midrule
-client & IF\_A & 1 & Packets on LAN~A come from LAN~A or via r1; their sources route back via IF\_A.\\
-client & IF\_D & 2 & Server/r2 replies to 10.10.1.10 arrive here (A3) with sources like 10.10.3.10, but the client's route to 10.10.3.10 is the default via IF\_A, so strict mode would drop every reply. Loose accepts them (the default route covers the source).\\
-r1 & IF\_A, IF\_B & 1 & Required by A7. It works: IF\_A only sees LAN~A sources, IF\_B sees sources in LAN~B/LAN~C, which route back via IF\_B (default). This is also why the client must use 10.10.1.10, not 10.10.4.2, as its source towards the server.\\
-r2 & IF\_B & 2 & Client$\to$server packets arrive here from r1 with source 10.10.1.10, but r2's best route to 10.10.1.10 is the \cmd{/32} via IF\_D. Strict would drop the entire forward direction.\\
-r2 & IF\_C, IF\_D & 1 & IF\_C only sees LAN~C sources; IF\_D only sees 10.10.4.2 (connected). The client never sends anything else over Link~D.\\
-server & IF\_C & 1 & Required by A7. Single interface, every source routes back through it.\\
-\midrule
-all & \cmd{conf.all} & 1 & Left strict, so effective values are exactly the ones above.\\
+client & IF\_A & 1 & Sources seen here are on LAN A or behind r1, and they route back via IF\_A.\\
+client & IF\_D & \textbf{2} & Replies from the server arrive here with sources like 10.10.3.10, but the client's route to that network is the default via IF\_A. Strict mode would drop every reply.\\
+r1 & both & 1 & Must stay strict, and it works: IF\_A only sees LAN A sources, and IF\_B sees LAN B and LAN C sources, which both route back via IF\_B. It is also why the client sends from 10.10.1.10 and not 10.10.4.2.\\
+r2 & IF\_B & \textbf{2} & Client packets arrive here from r1 with source 10.10.1.10, but r2's best route to that address is over IF\_D. Strict mode would drop the entire forward direction.\\
+r2 & IF\_C, IF\_D & 1 & IF\_C only sees LAN C sources, and IF\_D only sees the directly connected 10.10.4.2.\\
+server & IF\_C & 1 & Must stay strict. It has a single interface, so every source routes back through it.\\
 \bottomrule
-\end{tabular}
-\caption{rp\_filter settings. Loose mode is used only where the asymmetric routing requires it.}
+\end{tabularx}
+\caption{The \cmd{rp\_filter} value on each interface. Loose mode is used only where the asymmetric routing needs it.}
 \end{table}
 
-\shot{r3_rpfilter}{Effective rp\_filter settings on all four machines.}
-  {On each of client, r1, r2, server (one terminal per VM, or one after another over SSH):
-   \cmd{sysctl -a 2>/dev/null | grep '\textbackslash.rp\_filter'}}
+\begin{figure}[H]\centering
+\stackimg{r3_rpfilter_client}{0.16}\stackimg{r3_rpfilter_r1}{0.16}
+\stackimg{r3_rpfilter_r2}{0.16}\stackimg{r3_rpfilter_server}{0.16}
+\caption{\cmd{rp\_filter} values on client, r1, r2 and server (top to bottom).}
+\end{figure}
+
+\begin{aside}
+\textbf{What the screenshots show.}
+On every machine \cmd{conf.all} and \cmd{conf.default} are 1. On the client \cmd{enp0s9} (IF\_A) is 1 and
+\cmd{enp0s10} (IF\_D) is 2. r1 has 1 on both \cmd{enp0s9} and \cmd{enp0s10}. r2 has 2 on \cmd{enp0s9}
+(IF\_B) and 1 on \cmd{enp0s10} and \cmd{enp0s11}. The server has 1 on \cmd{enp0s9}. So strict mode is kept
+on r1 and the server as required, and loose mode appears only on the client's Link D interface and on
+r2's LAN B interface, which are the two places where the asymmetric path would otherwise be dropped.
+\end{aside}
+
 
 %=====================================================================
-\section*{R4. Our client against a standard web server}
+\section{Our client against a standard web server}
 
-On the server VM we serve a directory containing \cmd{index.html} and a random binary
-\cmd{bin300k.bin} (300\,000 bytes, $\ge$100\,KB) with \cmd{python3 -m http.server 8000}.
-On the client we fetch both files with our client and print the exit code, then fetch the
-same URLs with \cmd{curl} and compare the \cmd{md5sum}s. Both downloads must exit with 0
-and the checksums must match pairwise.
+\textbf{What we did.} On the server VM we served a directory with \cmd{python3 -m http.server 8000}.
+It holds an HTML page and a random 300\,000-byte binary file. From the client we fetched each
+file with our own client and printed its exit code, then fetched the same URL with \cmd{curl} and
+compared the two \cmd{md5sum}s. We expect exit code 0 for both downloads and identical checksums
+for each pair.
+\begin{lstlisting}
+server$ cd ~/r4 && python3 -m http.server 8000
+client$ sudo ./client/run-client http://10.10.3.10:8000/index.html -o a.html; echo $?
+client$ curl -s -o a_curl.html http://10.10.3.10:8000/index.html; md5sum a.html a_curl.html
+\end{lstlisting}
 
-\shot{r4_html}{Our client downloading an HTML page from \cmd{python3 -m http.server}; exit code and md5sum vs curl.}
-  {Server: \cmd{cd \textasciitilde/r4 \&\& python3 -m http.server 8000}.\\
-   Client: \cmd{sudo ./client/run-client http://10.10.3.10:8000/index.html -o a.html; echo \$?}\\
-   \cmd{curl -s -o a\_curl.html http://10.10.3.10:8000/index.html; md5sum a.html a\_curl.html}}
-\shot{r4_binary}{Our client downloading a 300\,KB binary; exit code and md5sum vs curl.}
-  {Client: \cmd{sudo ./client/run-client http://10.10.3.10:8000/bin300k.bin -o b.bin; echo \$?}\\
-   \cmd{curl -s -o b\_curl.bin http://10.10.3.10:8000/bin300k.bin; md5sum b.bin b\_curl.bin; ls -l b.bin}}
+\shot{r4_html}{HTML page downloaded with our client: exit code, and \cmd{md5sum} compared with curl.}
+\shot{r4_binary}{300\,KB binary downloaded with our client: exit code, and \cmd{md5sum} compared with curl.}
 
-%=====================================================================
-\section*{R5. curl, wget and our client against our server}
+\begin{aside}
+\textbf{What the screenshots show.}
+Both downloads print the status line our client received, \cmd{HTTP/1.0 200 OK} from
+\cmd{http.server}, and exit with code 0. For the HTML page the \cmd{md5sum} of our file and of curl's file is
+\cmd{c992ecc7298f2af44a300cefd26bb6ca}. For the binary it is \cmd{605a41badc9240fb248d2184096a2ebf} for both,
+and \cmd{ls -l} shows \cmd{b.bin} is 300\,000 bytes. The same binary, with the same checksum, is the file
+used in the next experiment.
+\end{aside}
 
-On the server VM we run \cmd{sudo ./server/run-server -p 8080 -d \textasciitilde/www} with
-\cmd{bin300k.bin} in the docroot and print its md5sum there. On the client we download the
-same file with \cmd{curl}, \cmd{wget} and our client (one after another, since our server
-handles one connection at a time) and compare all three checksums with the original.
-
-\shot{r5_three_clients}{curl, wget and our client downloading the same file from our server; all md5sums equal the original.}
-  {Server: \cmd{md5sum \textasciitilde/www/bin300k.bin; sudo ./server/run-server -p 8080 -d \textasciitilde/www}\\
-   Client: \cmd{curl -s -o c.bin http://10.10.3.10:8080/bin300k.bin; echo \$?}\\
-   \cmd{wget -q -O w.bin http://10.10.3.10:8080/bin300k.bin; echo \$?}\\
-   \cmd{sudo ./client/run-client http://10.10.3.10:8080/bin300k.bin -o o.bin; echo \$?}\\
-   \cmd{md5sum c.bin w.bin o.bin}\quad (show the server-side md5sum in the same screenshot, e.g.\ split terminal)}
-
-\paragraph{Supplementary (namespace testbed, not a substitute for the VM screenshots).}
-We also ran an automated end-to-end suite (\cmd{test/e2e.sh}) on a network-namespace copy of
-the same topology built with our own \cmd{netcfg} scripts (in a Docker container). It
-covers our client against \cmd{python3 -m http.server} and other standard servers
-(HTML, 300\,KB and 5\,MB binaries, chunked encoding, redirects, error statuses), our
-server against curl, wget and our client (status codes 400/403/404/501, HEAD, content
-types, 300\,KB/5\,MB binaries), and transfers under \cmd{netem} impairments (5\,\% and
-15\,\% loss, 25\,\% reordering, 5\,\% duplication, 2\,\% corruption, and all combined),
-plus checks of the packet logs. In the last recorded run 92 of 93 tests passed; the one
-failure is the $N=3$ fairness case discussed in R6 (it exceeds our own 2$\times$ threshold).
 
 %=====================================================================
-\section*{R6. Packet capture and TCP mechanisms}
+\section{curl, wget and our client against our server}
 
-\shot{r6_capture}{\cmd{tcpdump -nn} capture of one complete connection of our client (handshake, request, data, ACKs, FIN exchange).}
-  {Capture on the server, where both directions pass one interface (on the client, outgoing
-   packets use IF\_A and incoming ones IF\_D).\\
-   Server: \cmd{sudo ./server/run-server -p 8080 -d \textasciitilde/www} and in a second terminal
-   \cmd{sudo tcpdump -nn -i <IF\_C> 'tcp port 8080'}\\
-   Client: \cmd{sudo ./client/run-client http://10.10.3.10:8080/index.html -o x.html}\\
-   (Use a small file so SYN/SYN-ACK/ACK, request, response and both FINs fit on one screen.)}
+\textbf{What we did.} On the server VM we started our own server with the binary file in its
+document root and printed the file's \cmd{md5sum} there. From the client we downloaded the same
+file with \cmd{curl}, \cmd{wget} and our client, one after the other because our server handles
+one connection at a time, and checked that all three checksums equal the original.
+\begin{lstlisting}
+server$ md5sum ~/www/bin300k.bin; sudo ./server/run-server -p 8080 -d ~/www
+client$ curl -s -o c.bin http://10.10.3.10:8080/bin300k.bin; echo $?
+client$ wget -q -O w.bin http://10.10.3.10:8080/bin300k.bin; echo $?
+client$ sudo ./client/run-client http://10.10.3.10:8080/bin300k.bin -o o.bin; echo $?
+client$ md5sum c.bin w.bin o.bin
+\end{lstlisting}
 
-All of this is in \cmd{src/tcp.py}. Sequence numbers are compared modulo $2^{32}$.
+\shot{r5_three_clients}{curl, wget and our client downloading the same file from our server, with the original \cmd{md5sum}.}
 
-\paragraph{Retransmission.}
-We keep one retransmission timer for the oldest unacknowledged byte (\cmd{snd\_una}).
-RTT is sampled on one segment at a time and smoothed as in RFC~6298
-($\mathit{srtt}\leftarrow\frac78\mathit{srtt}+\frac18 r$,
-$\mathit{rttvar}\leftarrow\frac34\mathit{rttvar}+\frac14|\mathit{srtt}-r|$), with
-$\mathit{RTO}=\min(\mathit{srtt}+\max(4\cdot\mathit{rttvar},\,200\mbox{ ms}),\ 1\mbox{ s})$;
-the initial RTO is 1\,s. Karn's algorithm: the pending RTT sample is discarded whenever
-anything is retransmitted, so retransmitted segments are never timed. When the timer
-expires we double the RTO (still capped at 1\,s), set \cmd{snd\_nxt} back to \cmd{snd\_una}
-and resend the first segment; the rest is then resent go-back-N style as the window
-opens. If data is outstanding and nothing new has been acknowledged for 10\,s, the
-connection is aborted. Fast retransmit: on the third duplicate ACK the first
-unacknowledged segment is resent immediately. Before that, the first two duplicate ACKs each allow
-one extra new segment beyond \cmd{cwnd} (limited transmit, RFC~3042), so a
-small window can still produce three dup ACKs. SYN/SYN-ACK are retried every 1\,s for 8\,s,
-and our FIN is retransmitted until ACKed, giving up after 2\,s.
+\begin{aside}
+\textbf{What the screenshots show.}
+The original file on the server has \cmd{md5sum} \cmd{605a41badc9240fb248d2184096a2ebf}, and
+\cmd{c.bin} (curl), \cmd{w.bin} (wget) and \cmd{o.bin} (our client) all have exactly that checksum. All three
+commands exit with 0, and our client prints \cmd{HTTP/1.1 200 OK}, the status line from our own server.
+The server's log shows three requests, all from 10.10.1.10 and all answered with 200. The first two come
+from ordinary kernel ports (35114 and 35122, curl and wget). The third comes from port 64148, which is
+inside the 61000--65535 range our client draws from.
+\end{aside}
 
-\paragraph{Out-of-order buffering.}
-In-order data is appended to the receive buffer and \cmd{rcv\_nxt} advances. A segment
-that starts above \cmd{rcv\_nxt} but within our 65\,535-byte advertised window is stored in
-a dictionary keyed by its sequence number (keeping the longer copy on duplicates). Bytes
-below \cmd{rcv\_nxt} are trimmed, so duplicates are delivered only once. Whenever the gap at
-\cmd{rcv\_nxt} is filled, we repeatedly drain every buffered segment that now starts
-at or below \cmd{rcv\_nxt}, trimming overlap, until no more progress is made. A peer FIN is
-only consumed once \cmd{rcv\_nxt} reaches its sequence number. We send a cumulative ACK
-for every data segment, including duplicates and out-of-order ones (no delayed ACKs).
-These duplicate ACKs are what drive the sender's fast retransmit.
 
-\paragraph{Congestion control.} Reno, with NewReno handling of partial ACKs.
-Data in flight never exceeds $\min(\mathit{cwnd},\ \mbox{peer window})$.
-\begin{itemize}\setlength\itemsep{0pt}
-\item \emph{Slow start:} initial window 10\,MSS; while $\mathit{cwnd}<\mathit{ssthresh}$,
-  each new ACK adds $\min(\mbox{acked},\ \mathrm{MSS})$.
-\item \emph{Congestion avoidance:} each new ACK adds $\mathrm{MSS}^2/\mathit{cwnd}$
-  (about 1\,MSS per RTT).
-\item \emph{Fast recovery:} on the 3rd dup ACK, $\mathit{ssthresh}=\max(\mbox{flight}/2,\,2\,\mathrm{MSS})$,
-  $\mathit{cwnd}=\mathit{ssthresh}+3\,\mathrm{MSS}$ and \cmd{recover} is set to the highest sequence sent.
-  Each further dup ACK inflates \cmd{cwnd} by 1\,MSS. A partial ACK (below \cmd{recover})
-  immediately retransmits the next hole and deflates \cmd{cwnd} by the amount acked (NewReno);
-  a full ACK ends recovery with $\mathit{cwnd}=\mathit{ssthresh}$. A new fast retransmit is
-  not started until \cmd{snd\_una} passes \cmd{recover}.
-\item \emph{Timeout:} $\mathit{ssthresh}=\max(\mbox{flight}/2,\,2\,\mathrm{MSS})$,
-  $\mathit{cwnd}=1\,\mathrm{MSS}$, recovery is cancelled, then slow start again.
+%=====================================================================
+\section{Packet capture and TCP design}
+
+\textbf{What we did.} We captured one complete connection of our client with \cmd{tcpdump -nn} on
+the server, where both directions pass through a single interface (on the client, outgoing packets
+use one interface and replies come back on another). The client fetched a small file from our
+server, so the three-way handshake, the request, the response data and ACKs, and the FIN exchange
+all fit on one screen.
+\begin{lstlisting}
+server$ sudo ./server/run-server -p 8080 -d ~/www
+server$ sudo tcpdump -nn -i IF_C 'tcp port 8080'
+client$ sudo ./client/run-client http://10.10.3.10:8080/index.html -o x.html
+\end{lstlisting}
+
+\shot{r6_capture}{\cmd{tcpdump -nn} capture of one full connection of our client.}
+
+\begin{aside}
+\textbf{What the capture shows.} Sequence numbers are shown relative to each side's start, as
+\cmd{tcpdump} prints them.
+\begin{enumerate}
+\item \emph{Handshake.} The client (10.10.1.10, port 64980) sends a SYN with \cmd{win 65535} and
+  \cmd{mss 1460}. The server answers with a SYN-ACK acknowledging 1534331093 (the client's random initial number plus one)
+  and its own \cmd{mss 1460}, and the client's ACK follows. The MSS option appears only on these two segments.
+\item \emph{Request.} \cmd{GET /index.html HTTP/1.1} travels as one 117-byte segment (\cmd{seq 1:118}), which the server ACKs
+  immediately.
+\item \emph{Response.} The header (140 bytes, \cmd{seq 1:141}) and the 178-byte body (\cmd{seq 141:319}) go out as
+  two segments. The client ACKs each one (\cmd{ack 141}, then \cmd{ack 319}).
+\item \emph{Teardown.} Once the whole body has arrived, the client sends a FIN (\cmd{seq 118}), the server ACKs it
+  (\cmd{ack 119}) and sends its own FIN (\cmd{seq 319}), and the client's last ACK (\cmd{ack 320}) closes the connection.
+\end{enumerate}
+The window field is 65535 in every segment, and every data segment and FIN is acknowledged
+at once. The whole exchange takes about 8\,ms, and the handshake round trip is about 2.6\,ms. There are no
+retransmissions, duplicates or reordering in this capture, so the recovery paths described below are
+not visible here. We exercised them separately in the namespace test described at the end.
+\end{aside}
+
+\subsection*{How our TCP works}
+Everything lives in \cmd{src/tcp.py}, with sequence numbers compared modulo $2^{32}$. The
+client never hard-codes its own address: before the handshake it asks the kernel's routing table which local
+address reaches the destination (a UDP \cmd{connect()}, which sends nothing), and that gives 10.10.1.10
+towards the server. The connection object is built from three small components, each covering one of the three
+mechanisms below, so the connection itself only moves segments and timers around.
+
+\textbf{Retransmission (\cmd{RttEstimator} and the connection's timer).}
+There is a single timer for the oldest unacknowledged byte. We time one segment at a time and
+smooth the samples the usual way, $\mathit{srtt}\leftarrow\frac78\mathit{srtt}+\frac18 r$ and
+$\mathit{rttvar}\leftarrow\frac34\mathit{rttvar}+\frac14|\mathit{srtt}-r|$, giving
+$\mathit{RTO}=\min(\mathit{srtt}+\max(4\,\mathit{rttvar},200\text{ ms}),\,0.9\text{ s})$. The first RTO
+is 0.9\,s. A pending sample is thrown away whenever something is retransmitted, so retransmitted
+segments are never timed. When the timer fires we double the RTO (still capped at 0.9\,s), move
+the send pointer back to the oldest unacknowledged byte and resend that segment, and the rest
+follows as the window opens. If data is in flight and nothing new is acknowledged for 10\,s, we
+abort the connection. The third duplicate ACK triggers a fast retransmit. Before that, each of the
+first two duplicates lets one extra new segment out, so even a small window can generate three.
+SYN and SYN-ACK are retried every 0.9\,s for up to 8\,s, and a FIN is retried until it is ACKed,
+for at most 2\,s.
+
+\textbf{Out-of-order buffering (\cmd{ReceiveQueue}).}
+In-order data goes straight to the application buffer and the next expected sequence number
+advances. A segment that starts beyond it but inside our 65\,535-byte window is parked in a
+dictionary keyed by its sequence number, keeping the longer copy if one arrives twice. Anything
+below the next expected number is trimmed away, so duplicates are delivered only once. When a gap
+is filled, we keep releasing parked segments that now start at or below the next expected number,
+trimming any overlap, until nothing more moves. A peer FIN is only consumed once everything before
+it has arrived. We send a cumulative ACK for every data segment, including duplicate and
+out-of-order ones, and these repeated ACKs are what drive the sender's fast retransmit.
+
+\textbf{Congestion control (\cmd{NewReno}).}
+The data in flight never exceeds $\min(\mathit{cwnd},\text{peer window})$.
+\begin{itemize}
+\item \emph{Slow start:} the initial window is 10\,MSS, and each new ACK adds the number of bytes it
+  acknowledges, up to one MSS, while $\mathit{cwnd}<\mathit{ssthresh}$. We do not cap the increase at
+  $\mathit{ssthresh}$, so the last step can overshoot it by less than one MSS.
+\item \emph{Congestion avoidance:} each new ACK adds $\mathrm{MSS}^2/\mathit{cwnd}$, which is about one MSS per RTT.
+\item \emph{Fast recovery:} on the third duplicate ACK, $\mathit{ssthresh}=\max(\text{flight}/2,\,2\,\mathrm{MSS})$,
+  computed from the amount of data in flight and not from $\mathit{cwnd}$, and
+  $\mathit{cwnd}=\mathit{ssthresh}+3\,\mathrm{MSS}$ (the NewReno variant of RFC~6582), and we note the highest byte sent. Every further duplicate ACK
+  inflates the window by one MSS. A partial ACK resends the next hole and deflates the window by the
+  amount acknowledged, as NewReno does. A full ACK ends recovery with $\mathit{cwnd}=\mathit{ssthresh}$.
+\item \emph{Timeout:} $\mathit{ssthresh}$ is set as above, $\mathit{cwnd}$ drops to one MSS, recovery is
+  cancelled and we are back in slow start.
 \end{itemize}
+The controller only decides what to do and the connection carries it out, which keeps the
+window logic separate from sending and timers.
 
-\paragraph{Fairness measurements (namespace testbed).}
-We reproduced the bottleneck described on Piazza: 10\,Mbit/s with 10\,ms delay and a
-30-packet (45\,000\,B) FIFO on r2's Link~D egress, plus 10\,ms delay on r1$\to$r2 (netem +
-tbf, with TSO/GSO/GRO off). $N$ of our client$\leftarrow$our-server flows run at the same time as $N$
-curl$\leftarrow$\cmd{python3 -m http.server} flows (kernel TCP sender, CUBIC), downloading
-an 80\,MB file. Throughput is counted at the client over a 20\,s window after 5\,s of warm-up.
-Jain's index is over all $2N$ flows.
+\textbf{Sending in bursts.} Our receiver acknowledges every segment, so a sender that releases one segment per
+ACK produces a perfectly smooth stream. The kernel flows we share a link with get delayed ACKs from their
+receivers and send in small bursts. At a tail-drop queue a smooth flow is hit by far fewer drops than a bursty one,
+and in our first measurements it took up to 2.3 times the throughput of the curl flows. We therefore hold new data back until
+the window has room for four full segments and then send them together. Tails shorter than four segments
+and windows below five segments are sent immediately, so small transfers and recovery after a timeout are not slowed down.
+The window rules are untouched, so the data in flight never exceeds the congestion window or the peer's window.
+We measured this on the namespace copy of the topology with a 10\,Mbit/s bottleneck, 10\,ms delay and a 30-packet queue,
+running 1, 2 and 3 flows of each kind at once (our client downloading from our server against curl downloading from
+\cmd{http.server}). The ratio of our throughput to curl's was about 1.3, 2.0 and 2.3 before this change, and over
+three runs after it it was 0.67--0.78 for one flow of each kind, 0.73--1.26 for two and 0.88--1.17 for three,
+with Jain's fairness index between 0.93 and 0.99.
 
-\begin{table}[H]\centering\small
-\begin{tabular}{@{}cccccc@{}}
-\toprule
-$N$ & fair share & ours, mean (Mbit/s) & curl, mean (Mbit/s) & ratio ours/curl & Jain\\
-\midrule
-1 & 4.96 & 5.73 & 4.17 & 1.37 & 0.976\\
-2 & 2.48 & 3.28 (4.03, 2.53) & 1.67 (1.59, 1.75) & 1.96 & 0.868\\
-3 & 1.65 & 2.27 (2.32, 2.37, 2.11) & 1.04 (0.88, 1.07, 1.16) & 2.18 & 0.875\\
-\bottomrule
-\end{tabular}
-\caption{Last run (\cmd{test/results/e\_fairness\_N*/flows.txt}); link total 9.91\,Mbit/s in every case.
-Over all recorded runs the ratio was 1.33--1.38 for $N{=}1$, 1.70--2.47 for $N{=}2$
-and 2.18--2.81 for $N{=}3$.}
-\end{table}
-
-The link is always fully used and no flow starves. With a single flow of each kind the split is reasonably fair, but our flows get
-more than their share as $N$ grows (about $2\times$ the curl flows at $N=3$). We think the cause is
-where the drops land, not a more aggressive window rule. Our receiver ACKs every
-segment, so our sender is clocked out one segment per ACK and its packets spread over the RTT.
-curl's receiver (the Linux stack) uses delayed ACKs. Each of its ACKs covers two or more
-segments, so the kernel sender emits back-to-back bursts, and bursts are much more likely to
-overflow a 30-packet tail-drop queue. At $N=3$ we measured about 1.8\,\% of our segments
-lost/retransmitted against about 7\,\% for the curl flows (the qdisc dropped 1145 of
-37\,181 packets overall). For loss-based TCP, throughput $\propto \frac{\mathrm{MSS}}{\mathit{RTT}\sqrt{p}}$,
-so $\sqrt{7/1.8}\approx 2$, which matches the observed ratio. Per-ACK growth also helps us a
-little: with one ACK per segment, Reno's $\mathrm{MSS}^2/\mathit{cwnd}$ rule gives the full
-1\,MSS per RTT. So our control law is standard Reno, but the bottleneck penalises the
-burstier kernel flows more.
 
 \end{document}

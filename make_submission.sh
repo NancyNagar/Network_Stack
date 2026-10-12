@@ -6,13 +6,14 @@ set -e
 cd "$(dirname "$0")"
 E=$(printf '%s\n%s\n' "$(echo "$1" | tr a-z A-Z)" "$(echo "$2" | tr a-z A-Z)" | sort | paste -sd_)
 NAME="A3_$E"
-[ -f report/report.pdf ] || { echo "report/report.pdf missing" >&2; exit 1; }
+REPORT=report/report.pdf
+[ -f "$REPORT" ] || { echo "report/report.pdf missing" >&2; exit 1; }
 STAGE=$(mktemp -d)
 mkdir -p "$STAGE/$NAME/src"
 cp -r netcfg client server "$STAGE/$NAME/"
 cp src/packet.py src/tcp.py src/client.py src/server.py "$STAGE/$NAME/src/"
 cp README.md "$STAGE/$NAME/"
-cp report/report.pdf "$STAGE/$NAME/report.pdf"
+cp "$REPORT" "$STAGE/$NAME/report.pdf"
 chmod +x "$STAGE/$NAME"/netcfg/*.sh "$STAGE/$NAME"/client/run-client "$STAGE/$NAME"/server/run-server
 rm -f "$NAME.zip"
 python3 -c "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', sys.argv[2], sys.argv[3])" "$PWD/$NAME" "$STAGE/$NAME" .

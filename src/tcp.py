@@ -13,14 +13,15 @@ MY_MSS = 1460
 DEFAULT_PEER_MSS = 536
 RCV_WINDOW = 65535
 
-SYN_RETRY = 1.0
+SYN_RETRY = 0.9
 HANDSHAKE_GIVEUP = 8.0
 MIN_RTO = 0.2
-MAX_RTO = 1.0
+MAX_RTO = 0.9
 IDLE_GIVEUP = 10.0
 FIN_GIVEUP = 2.0
 MAX_SEND_BUFFER = 1 << 20
 INITIAL_CWND_SEGS = 10
+SEND_BURST = 4
 
 MOD = 1 << 32
 
@@ -595,6 +596,13 @@ class TCPConnection:
             n = min(mss, len(self.snd_buf), seq_diff(self.snd_max, self.snd_una))
             self.snd_nxt = seq_add(self.snd_una, n)
 
+    def _wait_for_burst(self, flight, unsent, window, room, mss):
+        if flight == 0 or unsent <= (SEND_BURST - 1) * mss:
+            return False
+        if window < (SEND_BURST + 1) * mss:
+            return False
+        return room < SEND_BURST * mss
+
     def _push(self):
         if self.state is not State.ESTABLISHED or self.closed or self.fin_sent:
             return
@@ -604,9 +612,12 @@ class TCPConnection:
             unsent = len(self.snd_buf) - flight
             if unsent <= 0:
                 return
-            room = min(self.cc.window(mss), self.peer_wnd) - flight
+            window = min(self.cc.window(mss), self.peer_wnd)
+            room = window - flight
             n = int(min(mss, unsent, room))
             if n <= 0 or (n < min(mss, unsent) and flight > 0):
+                return
+            if self._wait_for_burst(flight, unsent, window, room, mss):
                 return
             seq = self.snd_nxt
             self._xmit(ACK | PSH if n == unsent else ACK, seq,
