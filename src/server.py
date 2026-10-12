@@ -1,11 +1,3 @@
-"""HTTP/1.1 file server (Part D) on top of our user-space TCP.
-
-Usage: sudo ./server/run-server [-p PORT] [-d DOCROOT] [--log LOGFILE]
-
-One connection at a time: read the request head, send one response,
-close. Nothing a client does should be able to stop the accept loop.
-"""
-
 import argparse
 import os
 import re
@@ -75,10 +67,6 @@ def error_response(code, head_only=False):
 
 
 def find_head_end(buf, start=0):
-    """Index just past the blank line ending the head, or -1.
-
-    Accepts CRLF CRLF as well as bare LF LF (some hand-typed clients).
-    """
     best = -1
     i = buf.find(b"\r\n\r\n", start)
     if i >= 0:
@@ -90,7 +78,6 @@ def find_head_end(buf, start=0):
 
 
 def parse_request_line(head):
-    """Return (method, target) or None if the request line is malformed."""
     line = head.split(b"\n", 1)[0]
     if line.endswith(b"\r"):
         line = line[:-1]
@@ -107,7 +94,6 @@ def parse_request_line(head):
 
 
 def resolve(docroot, path):
-    """Map a URL path to a regular file under docroot, or None."""
     fs_path = os.path.join(docroot, path.lstrip("/"))
     try:
         if path.endswith("/") or os.path.isdir(fs_path):
@@ -120,12 +106,6 @@ def resolve(docroot, path):
 
 
 def build_response(head, docroot):
-    """Decide the response for a complete request head.
-
-    Returns (status, header_bytes, body) where body is None (HEAD),
-    bytes (error pages) or an open binary file that the caller must
-    stream and close.
-    """
     req = parse_request_line(head)
     if req is None:
         return error_response(400)
@@ -159,7 +139,6 @@ def build_response(head, docroot):
 
 
 class _SizedFile:
-    """An open file plus the length promised in Content-Length."""
 
     def __init__(self, f, size):
         self.f = f
@@ -179,11 +158,6 @@ class _SizedFile:
 
 
 def read_head(conn, deadline):
-    """Read from conn until a full request head arrives.
-
-    Returns the head bytes, b"" if it grew past MAX_HEAD, or None if the
-    client timed out / closed / errored first.
-    """
     buf = b""
     while True:
         remaining = deadline - time.monotonic()
@@ -205,10 +179,6 @@ def read_head(conn, deadline):
 
 
 def handle_connection(conn, docroot, deadline):
-    """Serve one request on conn. Returns the status sent, or None.
-
-    The caller is responsible for closing conn.
-    """
     head = read_head(conn, deadline)
     if head is None:
         return None

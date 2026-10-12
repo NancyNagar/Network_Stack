@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""HTTP/1.1 client for COL334 A3 (Part C), running on our own raw-socket TCP.
-
-    sudo ./client/run-client URL [-o OUTFILE] [--log LOGFILE]
-
-Exit codes: 0 = complete 2xx response, 1 = complete response with any other
-status, 2 = everything else (bad URL, DNS failure, refused, timeout,
-truncated or malformed response).
-
-The HTTP logic only needs a "conn" object with recv(max_bytes, timeout=None),
-send(data), close() and abort(), so it can be tested without raw sockets.
-"""
 
 import argparse
 import re
@@ -34,7 +23,7 @@ class URLError(ValueError):
 
 
 class ResponseError(Exception):
-    """The response was malformed or ended before it was complete."""
+    pass
 
 
 URL = namedtuple("URL", "host port target host_header")
@@ -44,12 +33,6 @@ _IPV4_LIKE_RE = re.compile(r"[0-9.]+")
 
 
 def parse_url(url):
-    """Split http://HOST[:PORT][/PATH] into its parts.
-
-    The request target is the path exactly as written, query included. A URL
-    with a query but no path (http://h?q=1) gets target "/?q=1". A fragment
-    (#...) is never sent to the server, so it is dropped.
-    """
     url = url.strip()
     sep = url.find("://")
     if sep < 0 or url[:sep].lower() != "http":
@@ -111,7 +94,6 @@ def build_request(url):
 
 
 class Reader:
-    """Buffered reading on top of conn.recv()."""
 
     def __init__(self, conn, timeout=IDLE_TIMEOUT):
         self.conn = conn
@@ -130,7 +112,6 @@ class Reader:
         return True
 
     def read_line(self, limit=MAX_LINE):
-        """Return one line without its line ending (CRLF, or a bare LF)."""
         start = 0
         while True:
             nl = self.buf.find(b"\n", start)
@@ -150,7 +131,6 @@ class Reader:
         return line
 
     def read_exact(self, n, write):
-        """Pass exactly n bytes to write(), or raise if the stream ends first."""
         while n > 0:
             if not self.buf and not self._fill():
                 raise ResponseError("connection closed with %d body bytes missing" % n)
@@ -213,7 +193,6 @@ def _read_one_head(reader):
 
 
 def read_head(reader):
-    """Read the final response head, skipping any 1xx interim responses."""
     while True:
         head = _read_one_head(reader)
         if not 100 <= head.code < 200:
@@ -228,8 +207,6 @@ def _header_tokens(headers, name):
 
 
 def body_framing(head):
-    """Decide how the body is delimited: ("none",), ("chunked",),
-    ("length", n) or ("close",)."""
     if 100 <= head.code < 200 or head.code in (204, 304):
         return ("none",)
 
@@ -273,7 +250,6 @@ def _read_chunked(reader, write):
 
 
 def read_body(reader, head, write):
-    """Stream the body to write(). Raises ResponseError if it is incomplete."""
     framing = body_framing(head)
     kind = framing[0]
     if kind == "chunked":
@@ -285,8 +261,6 @@ def read_body(reader, head, write):
 
 
 class Output:
-    """Body destination. The file is only opened once the head has arrived,
-    so a failed connection does not leave an empty file behind."""
 
     def __init__(self, path, stdout):
         self.path = path
@@ -313,11 +287,6 @@ class Output:
 
 
 def fetch(conn, url, out, stderr):
-    """Send the request on an open connection and save the response body.
-
-    Returns the exit code for a complete response; raises ResponseError or a
-    TCP/OS error otherwise. The connection is not closed here.
-    """
     conn.send(build_request(url))
     reader = Reader(conn)
     head = read_head(reader)

@@ -1,10 +1,3 @@
-"""TCP over raw IPv4 sockets.
-
-Single threaded: every blocking call (connect, accept, send, recv, close) runs
-the event loop itself -- read packets from the raw socket, process them, fire
-timers and push out whatever the windows allow.
-"""
-
 import collections
 import enum
 import random
@@ -37,7 +30,6 @@ def seq_add(a, n):
 
 
 def seq_diff(a, b):
-    """a - b in sequence space (assumes a is not before b)."""
     return (a - b) % MOD
 
 
@@ -77,8 +69,6 @@ class RecvTimeout(TCPError):
 
 
 def source_address_for(dst_ip, dst_port):
-    """Ask the kernel routing table which local address reaches dst_ip.
-    connect() on a UDP socket sends nothing; it only performs the route lookup."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect((dst_ip, dst_port or 9))
@@ -88,9 +78,6 @@ def source_address_for(dst_ip, dst_port):
 
 
 class RawIO:
-    """The raw socket, shared by a listener and the connections it accepts.
-    Only packets addressed to `port` are parsed; everything else is skipped
-    before the (comparatively expensive) checksum verification."""
 
     def __init__(self, port):
         self.port = port
@@ -122,7 +109,6 @@ class RawIO:
         return False
 
     def poll(self, timeout):
-        """Wait up to `timeout` seconds for packets and queue the valid ones."""
         if self.pending:
             return
         if timeout is not None and timeout < 0:
@@ -177,7 +163,6 @@ class RttEstimator:
 
 
 class NewReno:
-    """Reno/NewReno window logic. Returns decisions; the connection acts on them."""
 
     def __init__(self):
         self.cwnd = 0.0
@@ -231,7 +216,6 @@ class NewReno:
 
 
 class ReceiveQueue:
-    """In-order bytes for the application plus out-of-order segments parked until the gap fills."""
 
     def __init__(self):
         self.nxt = 0
@@ -360,7 +344,6 @@ class TCPConnection:
         self.abort()
 
     def _run(self, done, deadline=None):
-        """Run the loop until done() is true (True) or the deadline passes (False)."""
         while True:
             if done():
                 return True
@@ -413,7 +396,6 @@ class TCPConnection:
         return conn
 
     def _passive_open(self, syn):
-        """Called by the listener with the SYN that was just received."""
         self.rx.nxt = seq_add(syn.seq, 1)
         if syn.mss:
             self.peer_mss = syn.mss
@@ -442,7 +424,6 @@ class TCPConnection:
         self.last_progress = time.monotonic()
 
     def close(self):
-        """Graceful close (T9). Never raises."""
         if self.closed:
             return
         try:
@@ -571,7 +552,6 @@ class TCPConnection:
         self.rto_deadline = now + self.rtt.rto if self._flight() else None
 
     def _retransmit_head(self):
-        """Resend the first unacknowledged segment."""
         self.rtt_seq = None
         if self.snd_buf:
             n = min(self._mss(), len(self.snd_buf),
@@ -616,7 +596,6 @@ class TCPConnection:
             self.snd_nxt = seq_add(self.snd_una, n)
 
     def _push(self):
-        """Send new data while both windows allow it (T10)."""
         if self.state is not State.ESTABLISHED or self.closed or self.fin_sent:
             return
         mss = self._mss()
@@ -674,8 +653,6 @@ class TCPListener:
                 self._late_segment(seg)
 
     def _late_segment(self, seg):
-        """A FIN retransmitted by the previous peer (our last ACK was lost):
-        acknowledge it so the peer can finish its close."""
         c = self.last
         if c is None or not seg.flags & FIN or seg.flags & RST:
             return

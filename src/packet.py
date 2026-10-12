@@ -1,5 +1,3 @@
-"""IPv4 + TCP header construction/parsing, checksums and the packet log."""
-
 import socket
 import struct
 
@@ -16,7 +14,6 @@ DEFAULT_TTL = 64
 
 
 def checksum(data):
-    """16-bit one's complement of the one's complement sum (RFC 1071)."""
     if len(data) % 2:
         data += b"\x00"
     total = sum(struct.unpack("!%dH" % (len(data) // 2), data))
@@ -31,7 +28,6 @@ def pseudo_header(src, dst, tcp_len):
 
 
 class Segment:
-    """A TCP segment together with the IPv4 fields we care about."""
 
     def __init__(self, src, sport, dst, dport, seq=0, ack=0, flags=0,
                  win=65535, payload=b"", mss=None, ttl=DEFAULT_TTL, ip_id=0):
@@ -49,7 +45,6 @@ class Segment:
         self.ip_id = ip_id
 
     def seg_len(self):
-        """Sequence space consumed: payload plus one each for SYN and FIN."""
         n = len(self.payload)
         if self.flags & SYN:
             n += 1
@@ -58,7 +53,6 @@ class Segment:
         return n
 
     def build(self):
-        """Return the raw bytes of the full IPv4 packet."""
         options = b""
         if self.mss is not None:
             options = struct.pack("!BBH", 2, 4, self.mss)
@@ -92,8 +86,6 @@ class Segment:
 
 
 def parse(raw):
-    """Parse a raw IPv4 packet. Returns a Segment, or None if the packet is not
-    a well-formed TCP/IPv4 packet with valid IP and TCP checksums."""
     if len(raw) < IP_HDR_LEN:
         return None
     ver_ihl = raw[0]
@@ -148,7 +140,6 @@ def parse(raw):
 
 
 class PacketLog:
-    """Writes one line per segment, flushed immediately."""
 
     def __init__(self, path):
         self.f = open(path, "w")
