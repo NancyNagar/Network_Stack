@@ -6,6 +6,7 @@ timers and push out whatever the windows allow.
 """
 
 import collections
+import enum
 import random
 import select
 import socket
@@ -16,16 +17,16 @@ import packet
 from packet import Segment, SYN, ACK, FIN, RST, PSH
 
 MY_MSS = 1460
-DEFAULT_PEER_MSS = 536      # RFC 1122 default when the peer sends no MSS option
+DEFAULT_PEER_MSS = 536
 RCV_WINDOW = 65535
 
-SYN_RETRY = 1.0             # T7: retransmit SYN / SYN-ACK every second ...
-HANDSHAKE_GIVEUP = 8.0      # ... and keep trying for at least 6 s
+SYN_RETRY = 1.0
+HANDSHAKE_GIVEUP = 8.0
 MIN_RTO = 0.2
-MAX_RTO = 1.0               # T10: RTO never above 1 s
-IDLE_GIVEUP = 10.0          # T10: nothing acknowledged for 10 s
-FIN_GIVEUP = 2.0            # T9
-MAX_SEND_BUFFER = 1 << 20   # send() blocks while more than this is queued
+MAX_RTO = 1.0
+IDLE_GIVEUP = 10.0
+FIN_GIVEUP = 2.0
+MAX_SEND_BUFFER = 1 << 20
 INITIAL_CWND_SEGS = 10
 
 MOD = 1 << 32
@@ -46,6 +47,13 @@ def seq_lt(a, b):
 
 def seq_le(a, b):
     return a == b or seq_lt(a, b)
+
+
+class State(enum.Enum):
+    CLOSED = 0
+    SYN_SENT = 1
+    SYN_RCVD = 2
+    ESTABLISHED = 3
 
 
 class TCPError(Exception):
@@ -88,7 +96,6 @@ class RawIO:
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_RAW,
                                   socket.IPPROTO_TCP)
-        # We supply the IPv4 header ourselves.
         self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
         for opt in (getattr(socket, "SO_RCVBUFFORCE", 33), socket.SO_RCVBUF):
             try:
@@ -102,7 +109,7 @@ class RawIO:
 
     def send(self, seg):
         seg.ip_id = self.ip_id
-        self.ip_id = self.ip_id % 0xFFFF + 1     # 1..65535, never 0 (T1)
+        self.ip_id = self.ip_id % 0xFFFF + 1
         data = seg.build()
         for _ in range(3):
             try:
@@ -111,7 +118,6 @@ class RawIO:
             except (BlockingIOError, InterruptedError):
                 select.select([], [self.sock], [], 0.05)
             except OSError:
-                # e.g. no route right now; treat it as a lost packet
                 return False
         return False
 
@@ -138,7 +144,7 @@ class RawIO:
             if len(raw) < ihl + 4 or \
                     struct.unpack("!H", raw[ihl + 2:ihl + 4])[0] != self.port:
                 continue
-            seg = packet.parse(raw)       # None if malformed / bad checksum (T4)
+            seg = packet.parse(raw)
             if seg is not None:
                 self.pending.append(seg)
 
@@ -147,6 +153,140 @@ class RawIO:
 
     def close(self):
         self.sock.close()
+
+
+class RttEstimator:
+    def __init__(self):
+        self.srtt = None
+        self.rttvar = None
+        self.rto = MAX_RTO
+
+    def observe(self, r):
+        if self.srtt is None:
+            self.srtt, self.rttvar = r, r / 2
+        else:
+            self.rttvar = 0.75 * self.rttvar + 0.25 * abs(self.srtt - r)
+            self.srtt = 0.875 * self.srtt + 0.125 * r
+        self.rto = min(self.srtt + max(4 * self.rttvar, MIN_RTO), MAX_RTO)
+
+    def back_off(self):
+        self.rto = min(self.rto * 2, MAX_RTO)
+
+    def clamp(self, ceiling):
+        self.rto = min(self.rto, ceiling)
+
+
+class NewReno:
+    """Reno/NewReno window logic. Returns decisions; the connection acts on them."""
+
+    def __init__(self):
+        self.cwnd = 0.0
+        self.ssthresh = float(1 << 30)
+        self.dupacks = 0
+        self.in_recovery = False
+        self.recover = None
+
+    def open_window(self, mss):
+        self.cwnd = float(INITIAL_CWND_SEGS * mss)
+
+    def window(self, mss):
+        if self.in_recovery or self.dupacks >= 3:
+            return self.cwnd
+        return self.cwnd + self.dupacks * mss
+
+    def on_new_ack(self, acked, una, mss):
+        self.dupacks = 0
+        if self.in_recovery:
+            if seq_lt(una, self.recover):
+                self.cwnd = max(self.cwnd - acked + mss, float(mss))
+                return True
+            self.in_recovery = False
+            self.cwnd = self.ssthresh
+        elif self.cwnd < self.ssthresh:
+            self.cwnd += min(acked, mss)
+        else:
+            self.cwnd += mss * mss / self.cwnd
+        return False
+
+    def on_dupack(self, flight, una, snd_max, mss):
+        self.dupacks += 1
+        if self.in_recovery:
+            self.cwnd += mss
+            return False
+        fresh = self.recover is None or not seq_lt(una, self.recover)
+        if self.dupacks != 3 or not fresh:
+            return False
+        self.ssthresh = max(flight / 2, 2.0 * mss)
+        self.cwnd = self.ssthresh + 3 * mss
+        self.in_recovery = True
+        self.recover = snd_max
+        return True
+
+    def on_timeout(self, flight, snd_max, mss):
+        self.ssthresh = max(flight / 2, 2.0 * mss)
+        self.cwnd = float(mss)
+        self.in_recovery = False
+        self.dupacks = 0
+        self.recover = snd_max
+
+
+class ReceiveQueue:
+    """In-order bytes for the application plus out-of-order segments parked until the gap fills."""
+
+    def __init__(self):
+        self.nxt = 0
+        self.ready = bytearray()
+        self.parked = {}
+        self.fin_at = None
+        self.fin_seen = False
+
+    def absorb(self, seq, data, fin):
+        if fin:
+            self.fin_at = seq_add(seq, len(data))
+        if data:
+            self._place(seq, data)
+        if self.fin_at is not None and not self.fin_seen and self.nxt == self.fin_at:
+            self.nxt = seq_add(self.nxt, 1)
+            self.fin_seen = True
+            self.parked.clear()
+
+    def _place(self, seq, data):
+        if seq_lt(seq, self.nxt):
+            skip = seq_diff(self.nxt, seq)
+            if skip >= len(data):
+                return
+            data, seq = data[skip:], self.nxt
+        if seq == self.nxt:
+            self.ready += data
+            self.nxt = seq_add(self.nxt, len(data))
+            self._release_parked()
+        elif seq_diff(seq, self.nxt) < RCV_WINDOW:
+            prev = self.parked.get(seq)
+            if prev is None or len(prev) < len(data):
+                self.parked[seq] = data
+
+    def _release_parked(self):
+        advanced = True
+        while advanced and self.parked:
+            advanced = False
+            for start in list(self.parked):
+                chunk = self.parked[start]
+                end = seq_add(start, len(chunk))
+                if seq_le(end, self.nxt):
+                    del self.parked[start]
+                elif seq_le(start, self.nxt):
+                    del self.parked[start]
+                    self.ready += chunk[seq_diff(self.nxt, start):]
+                    self.nxt = end
+                    advanced = True
+
+    def readable(self):
+        return bool(self.ready) or self.fin_seen
+
+    def read(self, limit):
+        out = bytes(self.ready[:limit])
+        del self.ready[:limit]
+        return out
 
 
 class TCPConnection:
@@ -161,53 +301,51 @@ class TCPConnection:
         self.remote_ip = remote_ip
         self.remote_port = remote_port
 
-        self.state = "CLOSED"
+        self.state = State.CLOSED
         self.error = None
         self.closed = False
 
-        # send side
-        self.iss = random.getrandbits(32)        # T6
+        self.iss = random.getrandbits(32)
         self.snd_una = self.iss
         self.snd_nxt = self.iss
-        self.snd_max = self.iss                  # highest sequence ever sent
-        self.snd_buf = bytearray()               # unacked + unsent data, starts at snd_una
+        self.snd_max = self.iss
+        self.snd_buf = bytearray()
         self.peer_mss = DEFAULT_PEER_MSS
         self.peer_wnd = RCV_WINDOW
         self.fin_sent = False
         self.fin_seq = None
         self.fin_acked = False
 
-        # congestion control (Reno with NewReno partial-ACK handling)
-        self.cwnd = 0.0
-        self.ssthresh = float(1 << 30)
-        self.dupacks = 0
-        self.in_recovery = False
-        self.recover = None
-
-        # timers
-        self.srtt = None
-        self.rttvar = None
-        self.rto = MAX_RTO
+        self.cc = NewReno()
+        self.rtt = RttEstimator()
+        self.rx = ReceiveQueue()
         self.rto_deadline = None
         self.rtt_seq = None
         self.rtt_start = 0.0
         self.last_progress = time.monotonic()
         self.last_heard = time.monotonic()
 
-        # receive side
-        self.rcv_nxt = 0
-        self.rcv_buf = bytearray()
-        self.ooo = {}                            # seq -> payload, out of order (T12)
-        self.peer_fin_seq = None
-        self.fin_received = False
-
-    # ---------------------------------------------------------------- helpers
+        self._by_state = {
+            State.SYN_SENT: self._seg_in_syn_sent,
+            State.SYN_RCVD: self._seg_in_syn_rcvd,
+            State.ESTABLISHED: self._seg_in_established,
+        }
 
     def _mss(self):
         return min(MY_MSS, self.peer_mss)
 
+    def _flight(self):
+        return seq_diff(self.snd_nxt, self.snd_una)
+
+    def _arm_timer(self):
+        self.rto_deadline = time.monotonic() + self.rtt.rto
+
+    def _matches(self, seg):
+        return (seg.src == self.remote_ip and seg.sport == self.remote_port and
+                seg.dst == self.local_ip and seg.dport == self.local_port)
+
     def _xmit(self, flags, seq, payload=b"", mss=None):
-        ack = self.rcv_nxt if flags & ACK else 0
+        ack = self.rx.nxt if flags & ACK else 0
         seg = Segment(self.local_ip, self.local_port, self.remote_ip,
                       self.remote_port, seq, ack, flags, RCV_WINDOW,
                       bytes(payload), mss)
@@ -217,47 +355,46 @@ class TCPConnection:
     def _send_ack(self):
         self._xmit(ACK, self.snd_nxt)
 
-    def _matches(self, seg):
-        return (seg.src == self.remote_ip and seg.sport == self.remote_port and
-                seg.dst == self.local_ip and seg.dport == self.local_port)
-
-    def _flight(self):
-        return seq_diff(self.snd_nxt, self.snd_una)
-
-    def _check_error(self):
-        if self.error is not None:
-            raise self.error
+    def _fail(self, exc):
+        self.error = exc
+        self.abort()
 
     def _run(self, done, deadline=None):
-        """Run the event loop until done() is true (returns True) or the
-        deadline passes (returns False). Raises on connection errors."""
+        """Run the loop until done() is true (True) or the deadline passes (False)."""
         while True:
             if done():
                 return True
-            self._check_error()
+            if self.error is not None:
+                raise self.error
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 return False
-            wait = 0.5
-            if self.rto_deadline is not None:
-                wait = min(wait, self.rto_deadline - now)
-            if deadline is not None:
-                wait = min(wait, deadline - now)
-            self.io.poll(max(wait, 0))
-            while True:
-                seg = self.io.next()
-                if seg is None:
-                    break
-                if self._matches(seg):        # T5
-                    if self.log:
-                        self.log.received(seg)
-                    self.last_heard = time.monotonic()
-                    self._on_segment(seg)
-                    self._check_error()
+            self.io.poll(max(self._sleep_for(now, deadline), 0))
+            self._drain_inbox()
             self._on_timer()
             self._push()
 
-    # ------------------------------------------------------------- open/close
+    def _sleep_for(self, now, deadline):
+        wait = 0.5
+        if self.rto_deadline is not None:
+            wait = min(wait, self.rto_deadline - now)
+        if deadline is not None:
+            wait = min(wait, deadline - now)
+        return wait
+
+    def _drain_inbox(self):
+        while True:
+            seg = self.io.next()
+            if seg is None:
+                return
+            if not self._matches(seg):
+                continue
+            if self.log:
+                self.log.received(seg)
+            self.last_heard = time.monotonic()
+            self._on_segment(seg)
+            if self.error is not None:
+                raise self.error
 
     @classmethod
     def connect(cls, dst_ip, dst_port, log=None):
@@ -265,53 +402,43 @@ class TCPConnection:
             src_ip = source_address_for(dst_ip, dst_port)
         except OSError as e:
             raise TCPError("no route to %s: %s" % (dst_ip, e))
-        sport = random.randint(61000, 65535)     # T13
-        io = RawIO(sport)
-        conn = cls(io, log, src_ip, sport, dst_ip, dst_port, owns_io=True)
+        sport = random.randint(61000, 65535)
+        conn = cls(RawIO(sport), log, src_ip, sport, dst_ip, dst_port,
+                   owns_io=True)
         try:
-            conn._active_open()
+            conn._handshake(State.SYN_SENT, SYN)
         except BaseException:
             conn.abort()
             raise
         return conn
 
-    def _active_open(self):
-        self.state = "SYN_SENT"
+    def _passive_open(self, syn):
+        """Called by the listener with the SYN that was just received."""
+        self.rx.nxt = seq_add(syn.seq, 1)
+        if syn.mss:
+            self.peer_mss = syn.mss
+        self.peer_wnd = syn.win
+        self._handshake(State.SYN_RCVD, SYN | ACK)
+
+    def _handshake(self, state, flags):
+        self.state = state
         start = time.monotonic()
         while True:
-            self._xmit(SYN, self.iss, mss=MY_MSS)
+            self._xmit(flags, self.iss, mss=MY_MSS)
             self.snd_nxt = self.snd_max = seq_add(self.iss, 1)
-            elapsed = time.monotonic() - start
-            if elapsed >= HANDSHAKE_GIVEUP:
+            if time.monotonic() - start >= HANDSHAKE_GIVEUP:
                 break
             retry_at = min(time.monotonic() + SYN_RETRY, start + HANDSHAKE_GIVEUP)
-            if self._run(lambda: self.state == "ESTABLISHED", retry_at):
+            if self._run(lambda: self.state is State.ESTABLISHED, retry_at):
                 return
             if time.monotonic() - start >= HANDSHAKE_GIVEUP:
                 break
         raise TCPTimeout("handshake timed out")
 
-    def _passive_open(self, syn):
-        """Called by the listener with the SYN that was just received."""
-        self.state = "SYN_RCVD"
-        self.rcv_nxt = seq_add(syn.seq, 1)
-        if syn.mss:
-            self.peer_mss = syn.mss
-        self.peer_wnd = syn.win
-        start = time.monotonic()
-        while True:
-            self._xmit(SYN | ACK, self.iss, mss=MY_MSS)
-            self.snd_nxt = self.snd_max = seq_add(self.iss, 1)
-            retry_at = min(time.monotonic() + SYN_RETRY, start + HANDSHAKE_GIVEUP)
-            if self._run(lambda: self.state == "ESTABLISHED", retry_at):
-                return
-            if time.monotonic() - start >= HANDSHAKE_GIVEUP:
-                raise TCPTimeout("handshake timed out")
-
     def _established(self):
-        self.state = "ESTABLISHED"
+        self.state = State.ESTABLISHED
         self.snd_una = seq_add(self.iss, 1)
-        self.cwnd = float(INITIAL_CWND_SEGS * self._mss())
+        self.cc.open_window(self._mss())
         self.last_progress = time.monotonic()
 
     def close(self):
@@ -319,12 +446,11 @@ class TCPConnection:
         if self.closed:
             return
         try:
-            if self.state == "ESTABLISHED" and self.error is None:
-                # Everything we queued must be acknowledged before the FIN.
+            if self.state is State.ESTABLISHED and self.error is None:
                 self._run(lambda: not self.snd_buf)
                 self._send_fin()
-                deadline = time.monotonic() + FIN_GIVEUP
-                self._run(lambda: self.fin_acked and self.fin_received, deadline)
+                self._run(lambda: self.fin_acked and self.rx.fin_seen,
+                          time.monotonic() + FIN_GIVEUP)
         except (TCPError, OSError):
             pass
         finally:
@@ -335,26 +461,25 @@ class TCPConnection:
         self.fin_sent = True
         self._xmit(FIN | ACK, self.fin_seq)
         self.snd_nxt = self.snd_max = seq_add(self.fin_seq, 1)
-        self.rto = min(self.rto, 0.5)
-        self.rto_deadline = time.monotonic() + self.rto
+        self.rtt.clamp(0.5)
+        self._arm_timer()
 
     def abort(self):
         if self.closed:
             return
         self.closed = True
-        self.state = "CLOSED"
+        self.state = State.CLOSED
         if self.owns_io:
             self.io.close()
 
-    # -------------------------------------------------------------- data API
-
     def send(self, data):
-        self._check_error()
+        if self.error is not None:
+            raise self.error
         if self.closed or self.fin_sent:
             raise TCPError("connection closed")
         self.snd_buf += data
-        self.last_progress = time.monotonic() if self._flight() == 0 \
-            else self.last_progress
+        if self._flight() == 0:
+            self.last_progress = time.monotonic()
         self._push()
         self._run(lambda: len(self.snd_buf) <= MAX_SEND_BUFFER)
 
@@ -362,170 +487,92 @@ class TCPConnection:
         if self.closed:
             raise TCPError("connection closed")
         deadline = None if timeout is None else time.monotonic() + timeout
-        if not self._run(lambda: self.rcv_buf or self.fin_received, deadline):
+        if not self._run(self.rx.readable, deadline):
             raise RecvTimeout("recv timed out")
-        if self.rcv_buf:
-            out = bytes(self.rcv_buf[:max_bytes])
-            del self.rcv_buf[:max_bytes]
-            return out
-        return b""
-
-    # ------------------------------------------------------- incoming segments
+        return self.rx.read(max_bytes)
 
     def _on_segment(self, seg):
-        if seg.flags & RST:                      # T8
-            if self.state == "SYN_SENT":
-                if seg.flags & ACK and seg.ack == seq_add(self.iss, 1):
-                    self.error = ConnectionRefused("connection refused")
-                    self.abort()
-                return
-            self.error = ConnectionReset("connection reset by peer")
-            self.abort()
+        if seg.flags & RST:
+            self._on_reset(seg)
             return
+        handler = self._by_state.get(self.state)
+        if handler is not None:
+            handler(seg)
 
-        if self.state == "SYN_SENT":
-            if seg.flags & SYN and seg.flags & ACK and \
-                    seg.ack == seq_add(self.iss, 1):
-                self.rcv_nxt = seq_add(seg.seq, 1)
-                if seg.mss:
-                    self.peer_mss = seg.mss
-                self.peer_wnd = seg.win
-                self._established()
-                self._send_ack()
+    def _on_reset(self, seg):
+        if self.state is State.SYN_SENT:
+            if seg.flags & ACK and seg.ack == seq_add(self.iss, 1):
+                self._fail(ConnectionRefused("connection refused"))
             return
+        self._fail(ConnectionReset("connection reset by peer"))
 
-        if self.state == "SYN_RCVD":
-            if seg.flags & SYN and not seg.flags & ACK:
-                self._xmit(SYN | ACK, self.iss, mss=MY_MSS)   # our SYN-ACK was lost
-                return
-            if not (seg.flags & ACK and seg.ack == seq_add(self.iss, 1)):
-                return
+    def _seg_in_syn_sent(self, seg):
+        if not (seg.flags & SYN and seg.flags & ACK and
+                seg.ack == seq_add(self.iss, 1)):
+            return
+        self.rx.nxt = seq_add(seg.seq, 1)
+        if seg.mss:
+            self.peer_mss = seg.mss
+        self.peer_wnd = seg.win
+        self._established()
+        self._send_ack()
+
+    def _seg_in_syn_rcvd(self, seg):
+        if seg.flags & SYN and not seg.flags & ACK:
+            self._xmit(SYN | ACK, self.iss, mss=MY_MSS)
+            return
+        if seg.flags & ACK and seg.ack == seq_add(self.iss, 1):
             self._established()
-            # fall through: the ACK may carry the request already
+            self._seg_in_established(seg)
 
+    def _seg_in_established(self, seg):
         if seg.flags & SYN:
-            # Retransmitted SYN-ACK (our ACK got lost) or SYN: just re-ACK.
             self._send_ack()
             return
-
         if seg.flags & ACK:
             self._on_ack(seg)
         if seg.payload or seg.flags & FIN:
-            self._on_data(seg)
+            self.rx.absorb(seg.seq, seg.payload, bool(seg.flags & FIN))
+            self._send_ack()
 
     def _on_ack(self, seg):
         ack = seg.ack
         if seq_lt(self.snd_una, ack) and seq_le(ack, self.snd_max):
-            acked = seq_diff(ack, self.snd_una)
-            data_acked = acked
-            if self.fin_sent and seq_lt(self.fin_seq, ack):
-                self.fin_acked = True
-                data_acked -= 1
-            del self.snd_buf[:data_acked]
-            self.snd_una = ack
-            if seq_lt(self.snd_nxt, ack):        # can happen after go-back-N
-                self.snd_nxt = ack
-            self.peer_wnd = seg.win
-            now = time.monotonic()
-            self.last_progress = now
-
-            if self.rtt_seq is not None and seq_le(self.rtt_seq, ack):
-                self._rtt_sample(now - self.rtt_start)
-                self.rtt_seq = None
-
-            self._cc_on_new_ack(acked)
-            self.dupacks = 0
-            self.rto_deadline = now + self.rto if self._flight() else None
-            return
-
-        if ack == self.snd_una:
+            self._on_advance(seg)
+        elif ack == self.snd_una:
             is_dup = (not seg.payload and not seg.flags & (SYN | FIN) and
                       self._flight() > 0 and seg.win == self.peer_wnd)
             self.peer_wnd = seg.win
-            if is_dup:
-                self._cc_on_dupack()
-
-    def _on_data(self, seg):
-        seq = seg.seq
-        data = seg.payload
-        if seg.flags & FIN:
-            self.peer_fin_seq = seq_add(seq, len(data))
-
-        if data:
-            if seq_lt(seq, self.rcv_nxt):
-                skip = seq_diff(self.rcv_nxt, seq)
-                data = data[skip:] if skip < len(data) else b""
-                seq = self.rcv_nxt
-            if data:
-                if seq == self.rcv_nxt:
-                    self.rcv_buf += data
-                    self.rcv_nxt = seq_add(self.rcv_nxt, len(data))
-                    self._drain_ooo()
-                elif seq_diff(seq, self.rcv_nxt) < RCV_WINDOW:
-                    old = self.ooo.get(seq)
-                    if old is None or len(old) < len(data):
-                        self.ooo[seq] = data
-
-        if (self.peer_fin_seq is not None and not self.fin_received and
-                self.rcv_nxt == self.peer_fin_seq):
-            self.rcv_nxt = seq_add(self.rcv_nxt, 1)
-            self.fin_received = True
-            self.ooo.clear()
-
-        # T11: ACK every data segment, including duplicates and out-of-order.
-        self._send_ack()
-
-    def _drain_ooo(self):
-        progress = True
-        while progress and self.ooo:
-            progress = False
-            for s in list(self.ooo):
-                d = self.ooo[s]
-                end = seq_add(s, len(d))
-                if seq_le(end, self.rcv_nxt):
-                    del self.ooo[s]              # entirely old
-                elif seq_le(s, self.rcv_nxt):
-                    del self.ooo[s]
-                    self.rcv_buf += d[seq_diff(self.rcv_nxt, s):]
-                    self.rcv_nxt = end
-                    progress = True
-
-    # ---------------------------------------------------- congestion control
-
-    def _cc_on_new_ack(self, acked):
-        mss = self._mss()
-        if self.in_recovery:
-            if seq_lt(self.snd_una, self.recover):
-                # Partial ACK: the next hole is lost too, resend it right away.
+            if is_dup and self.cc.on_dupack(self._flight(), self.snd_una,
+                                            self.snd_max, self._mss()):
                 self._retransmit_head()
-                self.cwnd = max(self.cwnd - acked + mss, float(mss))
-                return
-            self.in_recovery = False
-            self.cwnd = self.ssthresh
-            return
-        if self.cwnd < self.ssthresh:
-            self.cwnd += min(acked, mss)                 # slow start
-        else:
-            self.cwnd += mss * mss / self.cwnd           # congestion avoidance
 
-    def _cc_on_dupack(self):
-        mss = self._mss()
-        self.dupacks += 1
-        if self.in_recovery:
-            self.cwnd += mss                             # window inflation
-            return
-        if self.dupacks == 3 and (self.recover is None or
-                                  not seq_lt(self.snd_una, self.recover)):
-            # Fast retransmit / fast recovery
-            self.ssthresh = max(self._flight() / 2, 2.0 * mss)
-            self.cwnd = self.ssthresh + 3 * mss
-            self.in_recovery = True
-            self.recover = self.snd_max
+    def _on_advance(self, seg):
+        ack = seg.ack
+        acked = seq_diff(ack, self.snd_una)
+        data_acked = acked
+        if self.fin_sent and seq_lt(self.fin_seq, ack):
+            self.fin_acked = True
+            data_acked -= 1
+        del self.snd_buf[:data_acked]
+        self.snd_una = ack
+        if seq_lt(self.snd_nxt, ack):
+            self.snd_nxt = ack
+        self.peer_wnd = seg.win
+        now = time.monotonic()
+        self.last_progress = now
+
+        if self.rtt_seq is not None and seq_le(self.rtt_seq, ack):
+            self.rtt.observe(now - self.rtt_start)
+            self.rtt_seq = None
+
+        if self.cc.on_new_ack(acked, self.snd_una, self._mss()):
             self._retransmit_head()
+        self.rto_deadline = now + self.rtt.rto if self._flight() else None
 
     def _retransmit_head(self):
         """Resend the first unacknowledged segment."""
-        self.rtt_seq = None                              # Karn's algorithm
+        self.rtt_seq = None
         if self.snd_buf:
             n = min(self._mss(), len(self.snd_buf),
                     seq_diff(self.snd_max, self.snd_una))
@@ -533,46 +580,32 @@ class TCPConnection:
                 self._xmit(ACK | PSH, self.snd_una, self.snd_buf[:n])
         elif self.fin_sent and not self.fin_acked:
             self._xmit(FIN | ACK, self.fin_seq)
-        self.rto_deadline = time.monotonic() + self.rto
+        self._arm_timer()
 
-    def _rtt_sample(self, r):
-        if self.srtt is None:
-            self.srtt = r
-            self.rttvar = r / 2
-        else:
-            self.rttvar = 0.75 * self.rttvar + 0.25 * abs(self.srtt - r)
-            self.srtt = 0.875 * self.srtt + 0.125 * r
-        # Like Linux: the variance term is never below 200 ms.
-        self.rto = min(self.srtt + max(4 * self.rttvar, MIN_RTO), MAX_RTO)
-
-    # ---------------------------------------------------------------- timers
+    def _gave_up_waiting(self, now):
+        if self._flight() > 0 and now - self.last_progress > IDLE_GIVEUP:
+            return True
+        return (bool(self.snd_buf) and self._flight() == 0 and
+                now - max(self.last_progress, self.last_heard) > IDLE_GIVEUP)
 
     def _on_timer(self):
-        if self.state != "ESTABLISHED":
+        if self.state is not State.ESTABLISHED:
             return
         now = time.monotonic()
-        stuck = self._flight() > 0 and now - self.last_progress > IDLE_GIVEUP
-        if self.snd_buf and self._flight() == 0 and \
-                now - max(self.last_progress, self.last_heard) > IDLE_GIVEUP:
-            stuck = True                         # peer window stayed closed
-        if stuck:
-            self.error = TCPTimeout("no acknowledgement for %d s" % IDLE_GIVEUP)
-            self.abort()
+        if self._gave_up_waiting(now):
+            self._fail(TCPTimeout("no acknowledgement for %d s" % IDLE_GIVEUP))
             return
         if self.rto_deadline is None or now < self.rto_deadline:
             return
         if self._flight() == 0:
             self.rto_deadline = None
             return
+        self._on_rto()
 
-        # Retransmission timeout: collapse the window and go back to snd_una.
+    def _on_rto(self):
         mss = self._mss()
-        self.ssthresh = max(self._flight() / 2, 2.0 * mss)
-        self.cwnd = float(mss)
-        self.in_recovery = False
-        self.dupacks = 0
-        self.recover = self.snd_max
-        self.rto = min(self.rto * 2, MAX_RTO)
+        self.cc.on_timeout(self._flight(), self.snd_max, mss)
+        self.rtt.back_off()
         if self.fin_sent and not self.snd_buf:
             self.snd_nxt = self.snd_max
         else:
@@ -584,7 +617,7 @@ class TCPConnection:
 
     def _push(self):
         """Send new data while both windows allow it (T10)."""
-        if self.state != "ESTABLISHED" or self.closed or self.fin_sent:
+        if self.state is not State.ESTABLISHED or self.closed or self.fin_sent:
             return
         mss = self._mss()
         while True:
@@ -592,18 +625,13 @@ class TCPConnection:
             unsent = len(self.snd_buf) - flight
             if unsent <= 0:
                 return
-            cwnd = self.cwnd
-            if not self.in_recovery and self.dupacks < 3:
-                cwnd += self.dupacks * mss       # limited transmit (RFC 3042)
-            room = min(cwnd, self.peer_wnd) - flight
+            room = min(self.cc.window(mss), self.peer_wnd) - flight
             n = int(min(mss, unsent, room))
-            if n <= 0:
+            if n <= 0 or (n < min(mss, unsent) and flight > 0):
                 return
-            if n < min(mss, unsent) and flight > 0:
-                return                           # wait rather than send a runt segment
             seq = self.snd_nxt
-            flags = ACK | PSH if n == unsent else ACK
-            self._xmit(flags, seq, self.snd_buf[flight:flight + n])
+            self._xmit(ACK | PSH if n == unsent else ACK, seq,
+                       self.snd_buf[flight:flight + n])
             if flight == 0:
                 self.last_progress = time.monotonic()
             self.snd_nxt = seq_add(seq, n)
@@ -613,7 +641,7 @@ class TCPConnection:
                     self.rtt_start = time.monotonic()
                 self.snd_max = self.snd_nxt
             if self.rto_deadline is None:
-                self.rto_deadline = time.monotonic() + self.rto
+                self._arm_timer()
 
 
 class TCPListener:
@@ -622,7 +650,7 @@ class TCPListener:
         self.port = port
         self.log = log
         self.io = RawIO(port)
-        self.last = None        # (conn tuple, rcv_nxt) of the previous connection
+        self.last = None
 
     def accept(self):
         while True:

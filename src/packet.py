@@ -3,7 +3,6 @@
 import socket
 import struct
 
-# TCP flag bits (byte 13 of the TCP header)
 FIN = 0x01
 SYN = 0x02
 RST = 0x04
@@ -75,7 +74,7 @@ class Segment:
 
         total_len = IP_HDR_LEN + tcp_len
         ip_hdr = struct.pack("!BBHHHBBH4s4s", (4 << 4) | 5, 0, total_len,
-                             self.ip_id, 0x4000,  # DF set, no fragmentation
+                             self.ip_id, 0x4000,
                              self.ttl, socket.IPPROTO_TCP, 0,
                              socket.inet_aton(self.src),
                              socket.inet_aton(self.dst))
@@ -106,12 +105,12 @@ def parse(raw):
     total_len, ip_id, frag, ttl, proto = struct.unpack("!HHHBB", raw[2:10])
     if proto != socket.IPPROTO_TCP or total_len < ihl or total_len > len(raw):
         return None
-    if frag & 0x3FFF:  # fragments (MF set or non-zero offset) are not supported
+    if frag & 0x3FFF:
         return None
     if checksum(raw[:ihl]) != 0:
         return None
 
-    raw = raw[:total_len]  # drop any link-layer padding
+    raw = raw[:total_len]
     src = socket.inet_ntoa(raw[12:16])
     dst = socket.inet_ntoa(raw[16:20])
     tcp = raw[ihl:]
@@ -130,9 +129,9 @@ def parse(raw):
     i = 0
     while i < len(opts):
         kind = opts[i]
-        if kind == 0:          # end of option list
+        if kind == 0:
             break
-        if kind == 1:          # NOP
+        if kind == 1:
             i += 1
             continue
         if i + 1 >= len(opts):
@@ -142,7 +141,7 @@ def parse(raw):
             break
         if kind == 2 and length == 4:
             mss = struct.unpack("!H", opts[i + 2:i + 4])[0]
-        i += length            # every other option is ignored
+        i += length
 
     return Segment(src, sport, dst, dport, seq, ack, flags, win,
                    tcp[hdr_len:], mss, ttl, ip_id)

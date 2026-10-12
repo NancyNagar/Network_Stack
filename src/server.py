@@ -13,9 +13,9 @@ import signal
 import sys
 import time
 
-HEAD_TIMEOUT = 10.0          # seconds from accept to a complete request head
-MAX_HEAD = 64 * 1024         # larger heads get a 400
-CHUNK = 64 * 1024            # file read / send unit
+HEAD_TIMEOUT = 10.0
+MAX_HEAD = 64 * 1024
+CHUNK = 64 * 1024
 
 REASONS = {
     200: "OK",
@@ -94,7 +94,6 @@ def parse_request_line(head):
     line = head.split(b"\n", 1)[0]
     if line.endswith(b"\r"):
         line = line[:-1]
-    # surrogateescape keeps arbitrary bytes intact for later filesystem use
     line = line.decode("utf-8", "surrogateescape")
     parts = line.split(" ")
     if len(parts) != 3 or not all(parts):
@@ -116,7 +115,6 @@ def resolve(docroot, path):
         if os.path.isfile(fs_path):
             return fs_path
     except (OSError, ValueError):
-        # e.g. embedded NUL bytes, over-long names
         pass
     return None
 
@@ -136,8 +134,6 @@ def build_response(head, docroot):
         return error_response(501)
     head_only = method == "HEAD"
 
-    # The query string is not part of the path, so the ".." check and the
-    # file mapping both look only at what precedes the first "?".
     path = target.split("?", 1)[0]
     if ".." in path.split("/"):
         return error_response(403, head_only)
@@ -148,7 +144,6 @@ def build_response(head, docroot):
     try:
         f = open(fs_path, "rb")
     except (OSError, ValueError):
-        # exists but unreadable (permissions etc.)
         return error_response(404, head_only)
     try:
         size = os.fstat(f.fileno()).st_size
@@ -175,7 +170,7 @@ class _SizedFile:
         while left > 0:
             data = self.f.read(min(CHUNK, left))
             if not data:
-                break       # file shrank underneath us; nothing more to send
+                break
             left -= len(data)
             yield data
 
@@ -197,7 +192,6 @@ def read_head(conn, deadline):
         try:
             data = conn.recv(65536, timeout=remaining)
         except Exception:
-            # RecvTimeout, ConnectionReset, ... -> no response either way
             return None
         if not data:
             return None
@@ -240,11 +234,10 @@ def log_line(msg):
         sys.stderr.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
         sys.stderr.flush()
     except (OSError, ValueError):
-        pass        # a broken stderr must not take the server down
+        pass
 
 
 def serve(port, docroot, log_path):
-    # Imported here so the request logic above can be tested without tcp.py
     import tcp
     import packet
 
@@ -298,7 +291,6 @@ def main(argv=None):
         ap.error("port out of range")
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    # Turn SIGTERM into a normal exit so the listener gets closed.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         serve(args.port, args.docroot, args.log)

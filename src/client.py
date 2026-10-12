@@ -22,12 +22,10 @@ EXIT_HTTP_STATUS = 1
 EXIT_FAILURE = 2
 
 RECV_SIZE = 65536
-# If the server goes completely silent we give up eventually instead of
-# hanging forever. Each recv() that returns data restarts this clock.
 IDLE_TIMEOUT = 30.0
 
-MAX_LINE = 64 * 1024          # status line, header line, chunk-size line
-MAX_HEAD = 256 * 1024         # whole response head
+MAX_LINE = 64 * 1024
+MAX_HEAD = 256 * 1024
 USER_AGENT = "col334-a3-client/1.0"
 
 
@@ -62,7 +60,6 @@ def parse_url(url):
     if hash_pos >= 0:
         rest = rest[:hash_pos]
 
-    # Authority runs until the first '/' or '?'.
     end = len(rest)
     for ch in "/?":
         pos = rest.find(ch)
@@ -84,7 +81,6 @@ def parse_url(url):
             port = int(port_str)
             if not 1 <= port <= 65535:
                 raise URLError("port out of range: %d" % port)
-        # "host:" with an empty port means the default port (RFC 3986).
 
     if not host or not _HOST_RE.fullmatch(host):
         raise URLError("bad host: %r" % host)
@@ -97,8 +93,6 @@ def parse_url(url):
         target = "/"
     elif target.startswith("?"):
         target = "/" + target
-    # The target goes into the request line verbatim, so it must not contain
-    # spaces or control characters.
     if any(ord(c) <= 0x20 or ord(c) >= 0x7F for c in target):
         raise URLError("path contains characters that need escaping")
 
@@ -193,7 +187,6 @@ def _read_one_head(reader):
     status_line = reader.read_line()
     version, code, reason = _parse_status_line(status_line)
 
-    # headers maps lowercase name -> list of values, in arrival order
     headers = {}
     last = None
     total = len(status_line)
@@ -205,7 +198,6 @@ def _read_one_head(reader):
         if not line:
             break
         if line[:1] in (b" ", b"\t"):
-            # obsolete line folding: continuation of the previous header
             if last is None:
                 raise ResponseError("continuation line before any header")
             values = headers[last]
@@ -243,8 +235,6 @@ def body_framing(head):
 
     codings = _header_tokens(head.headers, "transfer-encoding")
     if codings:
-        # Transfer-Encoding wins over Content-Length. If chunked is not the
-        # last coding the body can only end at connection close.
         if codings[-1] == "chunked":
             return ("chunked",)
         return ("close",)
@@ -264,7 +254,7 @@ _HEX_RE = re.compile(rb"[0-9A-Fa-f]{1,16}")
 def _read_chunked(reader, write):
     while True:
         line = reader.read_line()
-        size_str = line.split(b";", 1)[0].strip()   # drop chunk extensions
+        size_str = line.split(b";", 1)[0].strip()
         if not _HEX_RE.fullmatch(size_str):
             raise ResponseError("bad chunk size line: %r" % line[:100])
         size = int(size_str, 16)
@@ -275,8 +265,6 @@ def _read_chunked(reader, write):
         if reader.read_line(limit=2) != b"":
             raise ResponseError("missing CRLF after chunk data")
 
-    # Trailer section: read and ignore it. The body is already complete at
-    # this point, so a server that closes without the final CRLF is tolerated.
     try:
         while reader.read_line():
             pass
@@ -376,7 +364,7 @@ def run(url_str, out_path=None, log_path=None, connect=_tcp_connect,
 
     try:
         conn = connect(ip, url.port, log_path)
-    except Exception as e:      # refused, handshake timeout, raw socket errors
+    except Exception as e:
         return fail("cannot connect to %s:%d: %s" % (ip, url.port, _describe(e)))
 
     out = Output(out_path, stdout)
@@ -387,8 +375,6 @@ def run(url_str, out_path=None, log_path=None, connect=_tcp_connect,
         conn.close()
         return fail("bad response: %s" % e)
     except BaseException as e:
-        # TCP errors (reset, timeout), I/O errors on the output, Ctrl-C:
-        # drop the connection without waiting for anything.
         try:
             out.close()
         except OSError:
@@ -398,7 +384,6 @@ def run(url_str, out_path=None, log_path=None, connect=_tcp_connect,
             return fail(_describe(e))
         raise
 
-    # Complete response: we do not wait for anything else from the server.
     conn.close()
     return code
 
@@ -417,7 +402,6 @@ def main(argv=None):
     try:
         args = ap.parse_args(argv)
     except SystemExit as e:
-        # argparse exits with 2 on usage errors already; keep it that way
         return e.code if isinstance(e.code, int) else EXIT_FAILURE
 
     try:
